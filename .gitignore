@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+logs/
+outputs/
+models/
+*.pt
+*.pth
+.vscode/
+*.egg-info/
+build/
+dist/
+*.ipynb_checkpoints/
+.DS_Store
+wandb/
