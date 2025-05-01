@@ -1,0 +1,11 @@
+# Environment specific parameters for PatrollingEnv (defaults)
+# These match the defaults in the PatrollingEnv class __init__ signature
+
+num_patrollers: 3
+num_intruders: 2
+env_size: 10.0
+max_steps: 100
+patroller_move_dist: 0.5
+intruder_move_dist: 0.2
+detection_radius: 1.0
+# device will be set automatically from main script based on availability

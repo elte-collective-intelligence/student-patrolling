@@ -1,0 +1,37 @@
+# @package _global_
+
+defaults:
+  - _self_
+  - env: task      # <<< CHANGED from patrolling to task
+  - algo: ppo      # Default algorithm config
+  - override hydra/job_logging: default 
+  - override hydra/hydra_logging: default
+
+# General experiment parameters
+seed: 42
+total_frames: 1_000_000 # Total environment frames for training
+frames_per_batch: 2048   # Frames collected before performing updates
+num_envs: 1             # Start with 1 environment for simplicity (SyncDataCollector)
+
+# Logging parameters (placeholders for now)
+logger_backend: null # Set to 'wandb' or 'tensorboard' later
+project_name: "marl_patrolling"
+experiment_name: "ppo_baseline_${now:%Y%m%d_%H%M%S}" # Default name includes timestamp
+
+# Evaluation parameters
+eval_interval: 10000  # Evaluate every N frames
+eval_episodes: 10    # Number of episodes for evaluation
+
+# Placeholder for environment/algorithm specific groups loaded via defaults
+# These will be populated by the files specified in 'defaults'
+env: ???
+algo: ???
+
+hydra:
+  run:
+    # Output directory pattern: outputs/YYYY-MM-DD/HH-MM-SS/${experiment_name}
+    dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}_${experiment_name}
+  sweep:
+    # For multi-run experiments later
+    dir: multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    subdir: ${hydra.job.num}
