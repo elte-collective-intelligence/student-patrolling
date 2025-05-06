@@ -134,7 +134,7 @@ class PatrollingEnv(EnvBase):
         return out_td
 
     def _step(self, tensordict: TensorDictBase) -> TensorDictBase:
-        actions = tensordict["agents", "patrollers", "action"].to(self.device)
+        actions = tensordict["agents", "patrollers", "action"].to(self.device)  
 
         self._update_patroller_positions(actions)
         self._update_intruder_positions()

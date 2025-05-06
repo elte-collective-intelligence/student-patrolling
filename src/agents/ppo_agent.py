@@ -64,29 +64,29 @@ def create_ppo_models(
 
     # Define keys based on environment structure
     obs_key = ("agents", "patrollers", "observation")
-    action_key = ("agents", "patrollers", "action") # Note: Output action is at root by default
+    action_key = ("agents", "patrollers", "action") # Expected structure in env
     logits_key = "logits" # Intermediate output
 
     # --- Determine Dimensions ---
     try:
-        # Use direct dictionary access for specs
+        # Use direct dictionary access for observation spec
         patroller_obs_spec = env.observation_spec["agents"]["patrollers"]["observation"]
         obs_dim = patroller_obs_spec.shape[-1]
     except Exception as e:
-         raise ValueError(f"Could not get observation spec/dim from env.observation_spec. Structure: {env.observation_spec}") from e
+         # This shouldn't happen if env spec is correct, but raise informative error
+         raise ValueError(f"Could not get observation spec/dim using dict access. Structure: {env.observation_spec}") from e
 
     try:
-         # Use direct dictionary access for specs
-        patroller_action_spec_leaf = env.action_spec["agents"]["patrollers"]["action"]
+        # Use direct access for action spec based on DeprecationWarning behavior
+        patroller_action_spec_leaf = env.action_spec
+        # Verify it has the expected attributes before using
+        if not hasattr(patroller_action_spec_leaf, 'space') or not hasattr(patroller_action_spec_leaf.space, 'n'):
+             # If direct access didn't work, try dictionary access as a fallback
+             print("Warning: Direct access for action_spec failed. Trying dictionary access.")
+             patroller_action_spec_leaf = env.action_spec["agents"]["patrollers"]["action"]
         num_actions = patroller_action_spec_leaf.space.n
     except Exception as e:
-        # Fallback for deprecated behavior (action_spec might return leaf directly)
-        try:
-            print("Warning: Falling back to accessing action_spec leaf directly due to potential deprecation behavior.")
-            patroller_action_spec_leaf = env.action_spec
-            num_actions = patroller_action_spec_leaf.space.n
-        except Exception as e2:
-            raise ValueError(f"Could not get action spec/num_actions from env.action_spec. Structure: {env.action_spec}") from e2
+         raise ValueError(f"Could not get action spec/num_actions. Structure: {env.action_spec}") from e
 
 
     print(f"Detected Obs Dim: {obs_dim}, Num Actions: {num_actions}")
@@ -94,115 +94,90 @@ def create_ppo_models(
     # --- Create Actor ---
     actor_net = ActorNet(obs_dim, num_actions, hidden_dim).to(device)
 
-    # Wrap network to handle TensorDict input/output
+    # Inner module maps nested observation to root logits
     actor_module = TensorDictModule(
             module=actor_net,
-            in_keys=[obs_key],    # Reads observation from this nested key
-            out_keys=[logits_key], # Outputs logits to this root key
+            in_keys=[obs_key],
+            out_keys=[logits_key],
         )
 
-    # Wrap actor_module in ProbabilisticActor
+    # ProbabilisticActor reads root logits, WRITES NESTED action
     policy_module = ProbabilisticActor(
-        module=actor_module,           # The module producing distribution params
-        spec=patroller_action_spec_leaf, # The spec for the action space
-        in_keys=[logits_key],          # Use the logits output by actor_module
-        out_keys=["action"],           # Store sampled action at root "action" key
+        module=actor_module,
+        spec=patroller_action_spec_leaf, # Pass the leaf spec
+        in_keys=[logits_key],
+        out_keys=[action_key], # Write action to ("agents", "patrollers", "action")
         distribution_class=torch.distributions.Categorical,
-        return_log_prob=True,          # Will calculate log_prob and store as "sample_log_prob"
+        return_log_prob=True, # Log prob goes to ("agents", "patrollers", "sample_log_prob")
     ).to(device)
 
     # --- Create Critic ---
-    # Using local observation for now (non-centralized critic)
     obs_dim_critic = obs_dim
-    critic_in_keys = [obs_key] # Critic reads same observation key
-
+    critic_in_keys = [obs_key]
     critic_net = CriticNet(obs_dim_critic, hidden_dim).to(device)
-
-    # ValueOperator wraps the critic network
     value_module = ValueOperator(
         module=critic_net,
-        in_keys=critic_in_keys, # Reads observation
-        # out_keys defaults to ["state_value"] - stores value estimate at root
+        in_keys=critic_in_keys,
+        out_keys=["state_value"], # Keep value output at root
     ).to(device)
 
-    print("Policy Module Created.")
-    print("Value Module Created.")
+    print("Policy Module Created (outputs nested action).")
+    print("Value Module Created (outputs root value).")
+    # Return the modules - main.py will handle interaction
     return policy_module, value_module
 
 
 # --- Basic Test ---
 if __name__ == "__main__":
     print("Testing Agent/Model Definitions...")
-
-    # Create a dummy environment instance
     test_env = PatrollingEnv(num_patrollers=3, num_intruders=2)
-
-    # Dummy config
     test_cfg = {"hidden_dim": 32}
-
-    # Create models
     policy, value_func = create_ppo_models(
-        env=test_env,
-        cfg=test_cfg,
-        device=DEFAULT_DEVICE
+        env=test_env, cfg=test_cfg, device=DEFAULT_DEVICE
     )
 
-    # Get a sample observation batch from the environment reset
     td_initial = test_env.reset()
     print("\nInitial TD Structure (from env.reset):")
     print(f"  Keys: {td_initial.keys()}")
     print(f"  Obs shape: {td_initial[('agents', 'patrollers', 'observation')].shape}")
 
-
     # Test Policy Module
     print("\nTesting Policy Module Forward Pass...")
-    actor_obs_key_to_select = ("agents", "patrollers", "observation") # Defined earlier conceptually
-    # Input only needs the observation key specified in policy's underlying module
-    td_policy_input = td_initial.select(actor_obs_key_to_select) # Select using the known key
-    
+    td_policy_input = td_initial.select(("agents", "patrollers", "observation"))
     print(f"Policy Input TD Keys: {td_policy_input.keys()}")
 
-    # Pass data through the policy module
-    # This TD will contain:
-    # - original input observation
-    # - "logits" added by TensorDictModule
-    # - "action" added by ProbabilisticActor
-    # - "sample_log_prob" added by ProbabilisticActor (because return_log_prob=True)
-    td_policy_output = policy(td_policy_input)
-    print(f"Policy Output TD Keys: {td_policy_output.keys()}")
+    td_policy_output = policy(td_policy_input.clone())
+    print(f"Policy Output TD Keys (Root): {td_policy_output.keys()}")
+    nested_td_key = ("agents", "patrollers")
+    if nested_td_key in td_policy_output.keys(include_nested=True):
+        patroller_td_out = td_policy_output[nested_td_key]
+        print(f"Policy Output TD Keys (Nested under {nested_td_key}): {patroller_td_out.keys()}")
 
-    # Check expected output keys at the ROOT level
-    assert "action" in td_policy_output.keys()
-    assert "logits" in td_policy_output.keys()
-    assert "sample_log_prob" in td_policy_output.keys()
-    print("Policy output keys checked (action, logits, sample_log_prob).")
-    print(f"Sampled Action Shape: {td_policy_output['action'].shape}")
-    assert td_policy_output["action"].shape == (*test_env.batch_size, test_env.num_patrollers)
+        # Check for NESTED action
+        assert "action" in patroller_td_out.keys()
+        # Check for ROOT logits and sample_log_prob
+        assert "logits" in td_policy_output.keys()
+        assert "sample_log_prob" in td_policy_output.keys() # <<< Check ROOT
+        print("Policy output keys checked (nested action, root logits, root log_prob).") # Updated message
+
+        action_shape = patroller_td_out["action"].shape
+        print(f"Sampled Action Shape: {action_shape}")
+        assert action_shape == (*test_env.batch_size, test_env.num_patrollers)
+    else:
+        print(f"ERROR: Nested key {nested_td_key} not found in policy output!")
+
 
     # Test Value Module
     print("\nTesting Value Module Forward Pass...")
-    
-    critic_obs_key_to_select = ("agents", "patrollers", "observation") # Defined earlier conceptually
-
-
-    # Input only needs the observation key specified in value_func's in_keys
-    td_value_input = td_initial.select(critic_obs_key_to_select) # Select using the known key
-    
+    td_value_input = td_initial.select(("agents", "patrollers", "observation"))
     print(f"Value Input TD Keys: {td_value_input.keys()}")
-
-    # Pass data through the value module
-    # This TD will contain:
-    # - original input observation
-    # - "state_value" added by ValueOperator
-    td_value_output = value_func(td_value_input)
-    print(f"Value Output TD Keys: {td_value_output.keys()}")
-
-    # Check output key ("state_value") and shape
+    td_value_output = value_func(td_value_input.clone())
+    print(f"Value Output TD Keys (Root): {td_value_output.keys()}")
     assert "state_value" in td_value_output.keys()
     print("Value output key checked.")
-    print(f"State Value Shape: {td_value_output['state_value'].shape}")
-    # Check value shape aligns with [B, Np, 1] because critic takes local obs
-    assert td_value_output["state_value"].shape[-1] == 1
-    assert td_value_output["state_value"].shape[:-1] == td_value_input[("agents","patrollers","observation")].shape[:-1]
+    value_shape = td_value_output["state_value"].shape
+    print(f"State Value Shape: {value_shape}")
+    assert value_shape[-1] == 1
+    assert value_shape[:-1] == (*test_env.batch_size, test_env.num_patrollers)
 
     print("\nBasic Agent/Model Testing Completed.")
