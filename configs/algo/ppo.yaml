@@ -11,6 +11,8 @@ gae_lambda: 0.95     # Lambda for Generalized Advantage Estimation
 ppo_epochs: 10       # Number of optimization epochs per data batch
 lr: 3.0e-4         # Learning rate
 max_grad_norm: 0.5 # Max norm for gradient clipping (helps stability)
+minibatch_size: 512  # <<< ADD THIS LINE
+
 
 # Model parameters
 hidden_dim: 64       # Hidden layer size for Actor and Critic networks
