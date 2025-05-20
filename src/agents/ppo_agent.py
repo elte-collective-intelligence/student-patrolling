@@ -1,181 +1,202 @@
 import torch
 import torch.nn as nn
-from tensordict import TensorDict, TensorDictBase # Added TensorDictBase import
-from tensordict.nn import TensorDictModule # Removed TensorDictSequential - not used yet
+from tensordict import TensorDict, TensorDictBase
+from tensordict.nn import TensorDictModule
 
-# Use updated spec names directly
-from torchrl.data import CompositeSpec, UnboundedContinuousTensorSpec as Unbounded, DiscreteTensorSpec as Categorical
+# Use full names from torchrl.data for clarity, especially in mock specs
+from torchrl.data import (
+    CompositeSpec,
+    UnboundedContinuousTensorSpec,
+    DiscreteTensorSpec
+)
 from torchrl.modules import MLP, ProbabilisticActor, ValueOperator
 
 import sys
 import os
 # Use abspath for robustness
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from envs.env import PatrollingEnv # Assuming PatrollingEnv is defined correctly
-
+from envs.env import PatrollingEnv # For type hinting and Mock constants
 
 if torch.cuda.is_available():
     DEFAULT_DEVICE = torch.device("cuda")
-    print(f"Using device: {DEFAULT_DEVICE}")
 else:
-    DEFAULT_DEVICE = torch.device("cpu") # Default to CPU
-    print(f"Using device: {DEFAULT_DEVICE}")
+    DEFAULT_DEVICE = torch.device("cpu")
+print(f"Agent using device: {DEFAULT_DEVICE}")
 
 
 # --- Actor Network Definition ---
+# Expects a flat observation tensor: [Batch, FlatObsDim]
+# Outputs logits tensor: [Batch, NumPatrollers, NumActionsPerAgent]
 class ActorNet(nn.Module):
-    def __init__(self, obs_dim: int, num_actions: int, hidden_dim: int = 64):
+    def __init__(self, flat_obs_dim: int, num_patrollers: int, num_actions_per_agent: int, hidden_dim: int = 64):
         super().__init__()
+        self.num_patrollers = num_patrollers
+        self.num_actions_per_agent = num_actions_per_agent
         self.mlp = MLP(
-            in_features=obs_dim,
-            out_features=num_actions,
+            in_features=flat_obs_dim,
+            out_features=num_patrollers * num_actions_per_agent, # Output flat, then reshape in forward
             num_cells=[hidden_dim, hidden_dim],
             activation_class=nn.Tanh,
             activate_last_layer=False
         )
 
-    def forward(self, obs: torch.Tensor) -> torch.Tensor:
-        return self.mlp(obs)
+    def forward(self, obs_flat: torch.Tensor) -> torch.Tensor:
+        logits_flat = self.mlp(obs_flat)
+        # Reshape logits to [Batch (if any), NumPatrollers, NumActionsPerAgent]
+        if logits_flat.ndim > 1: # Batched input like [B, Np*Na]
+            return logits_flat.unflatten(-1, (self.num_patrollers, self.num_actions_per_agent))
+        else: # Non-batched input like [Np*Na] for test
+            return logits_flat.reshape(self.num_patrollers, self.num_actions_per_agent)
 
 
 # --- Critic Network Definition ---
+# Expects a flat observation tensor: [Batch, FlatObsDim]
+# Outputs a single value estimate: [Batch, 1]
 class CriticNet(nn.Module):
-    def __init__(self, obs_dim: int, hidden_dim: int = 64):
+    def __init__(self, flat_obs_dim: int, hidden_dim: int = 64):
         super().__init__()
         self.mlp = MLP(
-            in_features=obs_dim,
+            in_features=flat_obs_dim,
             out_features=1,
             num_cells=[hidden_dim, hidden_dim],
             activation_class=nn.Tanh,
             activate_last_layer=False
         )
+    def forward(self, obs_flat: torch.Tensor) -> torch.Tensor:
+        return self.mlp(obs_flat)
 
-    def forward(self, obs: torch.Tensor) -> torch.Tensor:
-        return self.mlp(obs)
 
-
-# --- Function to Create Models ---
+# --- Function to Create Models (for FLATTENED interface) ---
 def create_ppo_models(
-    env: PatrollingEnv,
-    cfg: dict,
+    env, # MockTransformedEnvSpecs (or object with similar .observation_spec, .action_spec, .num_patrollers)
+    cfg, # AlgoConfig instance
     device: torch.device = DEFAULT_DEVICE,
     ):
-    hidden_dim = cfg.get("hidden_dim", 64)
+    hidden_dim = getattr(cfg, "hidden_dim", 64) # Use getattr for SimpleConfig
 
-    # Define keys based on environment structure
-    obs_key = ("agents", "patrollers", "observation")
-    action_key = ("agents", "patrollers", "action")
-    log_prob_key = ("agents", "patrollers", "sample_log_prob")
-    value_key = "state_value"
-    logits_key = "logits"
+    # Keys policy/value modules will operate on (at root of TensorDict)
+    flat_obs_key = "observation_flat"
+    action_key_root = "action"
+    log_prob_key_root = "sample_log_prob"
+    logits_key_root = "logits"
+    value_key_root = "state_value"
 
-    # --- Determine Dimensions ---
+    # --- Determine Dimensions from TRANSFORMED Specs ---
     try:
-        # *** USE DICTIONARY ACCESS for Observation Spec ***
-        patroller_obs_spec = env.observation_spec["agents"]["patrollers"]["observation"]
-        obs_dim = patroller_obs_spec.shape[-1]
+        obs_spec_transformed = env.observation_spec[flat_obs_key]
+        flat_obs_dim = obs_spec_transformed.shape[-1]
+
+        # Action spec for policy is now root due to RemapActionToNested transform_action_spec
+        if isinstance(env.action_spec, CompositeSpec) and action_key_root in env.action_spec.keys():
+            action_spec_transformed_leaf = env.action_spec[action_key_root]
+        elif hasattr(env.action_spec, 'space') and hasattr(env.action_spec.space, 'n'):
+            print("Info: env.action_spec appears to be the leaf spec directly for create_ppo_models.")
+            action_spec_transformed_leaf = env.action_spec
+        else:
+            raise ValueError(f"Cannot determine action spec leaf for create_ppo_models. ActionSpec: {env.action_spec}")
+
+        num_actions_per_agent = action_spec_transformed_leaf.space.n
+        num_patrollers = env.num_patrollers # Get from mock env
+
     except Exception as e:
-         raise ValueError(f"Could not get observation spec/dim using dict access. Structure: {env.observation_spec}") from e
+         raise ValueError(f"Could not get transformed specs in create_ppo_models.\n"
+                          f"ObsSpec: {getattr(env, 'observation_spec', 'MISSING')}\n"
+                          f"ActionSpec: {getattr(env, 'action_spec', 'MISSING')}") from e
 
-    try:
-        # *** USE DICTIONARY ACCESS for Action Spec ***
-        patroller_action_spec_leaf = env.action_spec["agents"]["patrollers"]["action"]
-        num_actions = patroller_action_spec_leaf.space.n
-    except Exception as e:
-         # *** If nested dictionary access fails, use direct access (deprecated behaviour) ***
-        try:
-            print("Warning: Nested dict access for action_spec failed. Trying direct access (fallback).")
-            patroller_action_spec_leaf = env.action_spec
-            if not hasattr(patroller_action_spec_leaf, 'space'):
-                 raise AttributeError("Direct access did not return a valid spec.")
-            num_actions = patroller_action_spec_leaf.space.n
-        except Exception as e2:
-            raise ValueError(f"Could not get action spec/num_actions. Structure: {env.action_spec}") from e
+    print(f"Agent create_ppo_models: Flat Obs Dim: {flat_obs_dim}, Num Patrollers: {num_patrollers}, Actions/Agent: {num_actions_per_agent}")
 
+    # --- Create Actor Network ---
+    # ActorNet needs Np and N_actions_per_agent for correct logit reshaping
+    actor_net = ActorNet(flat_obs_dim, num_patrollers, num_actions_per_agent, hidden_dim)
 
-    print(f"Detected Obs Dim: {obs_dim}, Num Actions: {num_actions}")
-
-    # --- Create Actor ---
-    actor_net = ActorNet(obs_dim, num_actions, hidden_dim).to(device)
-    actor_module = TensorDictModule(
-            module=actor_net, in_keys=[obs_key], out_keys=[logits_key],
-        )
+    # --- Create Policy Module (Operates on FLAT obs, outputs ROOT action/log_prob) ---
     policy_module = ProbabilisticActor(
-        module=actor_module,
-        spec=patroller_action_spec_leaf,
-        in_keys=[logits_key],      # Reads root logits from module output
-        # --- Only specify action key in out_keys ---
-        out_keys=[action_key],     # Where to store the sampled action
-        # --- End Change ---
+        module=TensorDictModule(
+            module=actor_net,
+            in_keys=[flat_obs_key], # Reads "observation_flat"
+            out_keys=[logits_key_root]  # Outputs "logits" (reshaped by ActorNet to [B,Np,N_actions])
+        ),
+        spec=action_spec_transformed_leaf, # Spec for root "action" (shape [B, Np])
+        in_keys=[logits_key_root],        # Reads root "logits"
+        out_keys=[action_key_root],       # Writes root "action" (shape [B, Np])
         distribution_class=torch.distributions.Categorical,
-        return_log_prob=True,    # Calculate log probability
-        log_prob_key=log_prob_key  # Explicitly store log_prob under this nested key
+        return_log_prob=True,
+        log_prob_key=log_prob_key_root # Writes root "sample_log_prob" (shape [B, Np])
     ).to(device)
 
-    # --- Create Critic ---
-    critic_net = CriticNet(obs_dim, hidden_dim).to(device) # Use obs_dim directly
+    # --- Create Critic Network ---
+    critic_net = CriticNet(flat_obs_dim, hidden_dim)
+
+    # --- Create Value Module (Operates on FLAT obs, outputs ROOT value) ---
     value_module = ValueOperator(
-        module=critic_net, in_keys=[obs_key], out_keys=[value_key], # Output root value
+        module=critic_net,
+        in_keys=[flat_obs_key],  # Reads flat observation
+        out_keys=[value_key_root], # Writes root state_value (shape [B, 1])
     ).to(device)
 
-    print("Policy Module Created (outputs nested action/log_prob).")
-    print("Value Module Created (outputs root value).")
+    print("Policy Module Created (expects flat_obs, outputs root action/log_prob).")
+    print("Value Module Created (expects flat_obs, outputs root value).")
     return policy_module, value_module
 
-# --- Basic Test ---
+# --- Basic Test (Adjusted for FLATTENED Interface) ---
 if __name__ == "__main__":
-    print("Testing Agent/Model Definitions...")
-    test_env = PatrollingEnv(num_patrollers=3, num_intruders=2)
-    test_cfg = {"hidden_dim": 32}
-    # create_ppo_models uses dictionary access for specs now
+    print("Testing Agent/Model Definitions (Flattened Interface)...")
+
+    # Constants for mock environment setup
+    N_PATROLLERS_MOCK = 3
+    N_INTRUDERS_MOCK = 2 # For calculating obs_per_agent for PatrollingEnv internals
+    _base_env_temp_for_calc = PatrollingEnv(num_patrollers=N_PATROLLERS_MOCK, num_intruders=N_INTRUDERS_MOCK)
+    OBS_PER_AGENT_MOCK = _base_env_temp_for_calc.obs_dim_per_patroller
+    _base_env_temp_for_calc.close()
+    FLAT_OBS_DIM_MOCK = N_PATROLLERS_MOCK * OBS_PER_AGENT_MOCK
+    N_ACTIONS_PER_AGENT_MOCK = 5
+
+    class MockTransformedEnvSpecs:
+        observation_spec = CompositeSpec({
+            "observation_flat": UnboundedContinuousTensorSpec(
+                shape=torch.Size([FLAT_OBS_DIM_MOCK]), dtype=torch.float32, device=DEFAULT_DEVICE)
+        }, shape=torch.Size([]))
+        action_spec = CompositeSpec({
+             "action": DiscreteTensorSpec(
+                 n=N_ACTIONS_PER_AGENT_MOCK,
+                 shape=torch.Size([N_PATROLLERS_MOCK]),
+                 dtype=torch.int64, device=DEFAULT_DEVICE)
+        }, shape=torch.Size([]))
+        batch_size = torch.Size([])
+        num_patrollers = N_PATROLLERS_MOCK # Policy needs this
+
+    print(f"Mock Specs: Obs Flat Shape: {MockTransformedEnvSpecs.observation_spec['observation_flat'].shape}, "
+          f"Action Root Shape: {MockTransformedEnvSpecs.action_spec['action'].shape}, "
+          f"NumPatrollers for Mock: {MockTransformedEnvSpecs.num_patrollers}")
+
+    test_cfg_flat = {"hidden_dim": 32} # For AlgoConfig access
     policy, value_func = create_ppo_models(
-        env=test_env, cfg=test_cfg, device=DEFAULT_DEVICE
+        env=MockTransformedEnvSpecs(),
+        cfg=type('AlgoConfigMock', (), test_cfg_flat)(), # Mock the AlgoConfig object
+        device=DEFAULT_DEVICE
     )
 
-    td_initial = test_env.reset()
-    print("\nInitial TD Structure (from env.reset):")
-    print(f"  Keys: {td_initial.keys()}")
-    print(f"  Obs shape: {td_initial[('agents', 'patrollers', 'observation')].shape}")
+    sample_flat_obs = torch.randn(FLAT_OBS_DIM_MOCK, device=DEFAULT_DEVICE)
+    td_input_flat = TensorDict({"observation_flat": sample_flat_obs}, batch_size=[])
 
-    # Test Policy Module
-    print("\nTesting Policy Module Forward Pass...")
-    td_policy_input = td_initial.select(("agents", "patrollers", "observation"))
-    print(f"Policy Input TD Keys: {td_policy_input.keys()}")
-
-    td_policy_output = policy(td_policy_input.clone())
-    print(f"Policy Output TD Keys (Root): {td_policy_output.keys()}") # Expect 'agents', 'logits'
-    nested_td_key = ("agents", "patrollers")
-    patroller_td_out = td_policy_output.get(nested_td_key) # No need for default if assert passes
-    print(f"Policy Output TD Keys (Nested under {nested_td_key}): {patroller_td_out.keys()}")
-
-    # --- Corrected Assertions ---
-    # Check NESTED action and NESTED log_prob
-    assert "action" in patroller_td_out.keys()
-    assert "sample_log_prob" in patroller_td_out.keys()
-    # Check ROOT logits
+    print("\nTesting Policy Module Forward Pass (Flat Interface)...")
+    td_policy_output = policy(td_input_flat.clone())
+    print(f"Policy Output TD Keys (Root): {td_policy_output.keys()}")
+    assert "action" in td_policy_output.keys()
+    assert "sample_log_prob" in td_policy_output.keys()
     assert "logits" in td_policy_output.keys()
-    print("Policy output keys checked (nested action, nested log_prob, root logits).")
-    # --- End Correction ---
+    print("Policy output keys checked (root action, root sample_log_prob, root logits).")
+    print(f"Sampled Action Shape: {td_policy_output['action'].shape}")
+    assert td_policy_output["action"].shape == torch.Size([N_PATROLLERS_MOCK])
+    print(f"Sampled LogProb Shape: {td_policy_output['sample_log_prob'].shape}")
+    assert td_policy_output['sample_log_prob'].shape == torch.Size([N_PATROLLERS_MOCK])
 
-    # Check shapes
-    action_shape = patroller_td_out["action"].shape
-    log_prob_shape = patroller_td_out["sample_log_prob"].shape # Get from nested TD
-    print(f"Sampled Action Shape: {action_shape}")
-    print(f"Sampled LogProb Shape: {log_prob_shape}")
-    assert action_shape == (*test_env.batch_size, test_env.num_patrollers)
-    assert log_prob_shape == (*test_env.batch_size, test_env.num_patrollers)
-
-    # Test Value Module (remains the same, checks root state_value)
-    print("\nTesting Value Module Forward Pass...")
-    td_value_input = td_initial.select(("agents", "patrollers", "observation"))
-    print(f"Value Input TD Keys: {td_value_input.keys()}")
-    td_value_output = value_func(td_value_input.clone())
+    print("\nTesting Value Module Forward Pass (Flat Interface)...")
+    td_value_output = value_func(td_input_flat.clone())
     print(f"Value Output TD Keys (Root): {td_value_output.keys()}")
     assert "state_value" in td_value_output.keys()
-    print("Value output key checked.")
-    value_shape = td_value_output["state_value"].shape
-    print(f"State Value Shape: {value_shape}")
-    assert value_shape[-1] == 1
-    assert value_shape[:-1] == (*test_env.batch_size, test_env.num_patrollers)
+    print("Value output key checked (root state_value).")
+    print(f"State Value Shape: {td_value_output['state_value'].shape}")
+    assert td_value_output['state_value'].shape == torch.Size([1])
 
-    print("\nBasic Agent/Model Testing Completed.")
+    print("\nBasic Agent/Model Testing (Flattened Interface) Completed.")
