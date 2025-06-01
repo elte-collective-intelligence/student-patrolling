@@ -5,9 +5,10 @@ from tensordict.nn import TensorDictModule
 
 # Use full names from torchrl.data for clarity, especially in mock specs
 from torchrl.data import (
-    CompositeSpec,
-    UnboundedContinuousTensorSpec,
-    DiscreteTensorSpec
+    Unbounded,  # Instead of UnboundedContinuousTensorSpec
+    Composite,  # Instead of CompositeSpec
+    Categorical,  # Instead of DiscreteTensorSpec
+    Binary  # Instead of BinaryDiscreteTensorSpec if needed
 )
 from torchrl.modules import MLP, ProbabilisticActor, ValueOperator
 
@@ -68,13 +69,13 @@ class CriticNet(nn.Module):
 
 # --- Function to Create Models (for FLATTENED interface) ---
 def create_ppo_models(
-    env, # MockTransformedEnvSpecs (or object with similar .observation_spec, .action_spec, .num_patrollers)
-    cfg, # AlgoConfig instance
+    env,  # MockTransformedEnvSpecs (or env with .observation_spec, .action_spec, .num_patrollers)
+    cfg,  # AlgoConfig instance
     device: torch.device = DEFAULT_DEVICE,
-    ):
-    hidden_dim = getattr(cfg, "hidden_dim", 64) # Use getattr for SimpleConfig
+):
+    hidden_dim = getattr(cfg, "hidden_dim", 64)
 
-    # Keys policy/value modules will operate on (at root of TensorDict)
+    # Keys for policy/value modules (unchanged)
     flat_obs_key = "observation_flat"
     action_key_root = "action"
     log_prob_key_root = "sample_log_prob"
@@ -83,59 +84,68 @@ def create_ppo_models(
 
     # --- Determine Dimensions from TRANSFORMED Specs ---
     try:
+        # Get observation spec and dimensions
         obs_spec_transformed = env.observation_spec[flat_obs_key]
+        if not isinstance(obs_spec_transformed, Unbounded):
+            raise ValueError(f"Expected Unbounded obs spec, got {type(obs_spec_transformed)}")
         flat_obs_dim = obs_spec_transformed.shape[-1]
 
-        # Action spec for policy is now root due to RemapActionToNested transform_action_spec
-        if isinstance(env.action_spec, CompositeSpec) and action_key_root in env.action_spec.keys():
-            action_spec_transformed_leaf = env.action_spec[action_key_root]
-        elif hasattr(env.action_spec, 'space') and hasattr(env.action_spec.space, 'n'):
-            print("Info: env.action_spec appears to be the leaf spec directly for create_ppo_models.")
-            action_spec_transformed_leaf = env.action_spec
+        # Get action spec - handle both composite and direct cases
+        if isinstance(env.action_spec, Composite):
+            if action_key_root in env.action_spec.keys():
+                action_spec_leaf = env.action_spec[action_key_root]
+            else:
+                # Try nested path as fallback
+                action_spec_leaf = env.action_spec["agents", "patrollers", "action"]
         else:
-            raise ValueError(f"Cannot determine action spec leaf for create_ppo_models. ActionSpec: {env.action_spec}")
+            # Handle direct leaf spec case
+            action_spec_leaf = env.action_spec
 
-        num_actions_per_agent = action_spec_transformed_leaf.space.n
-        num_patrollers = env.num_patrollers # Get from mock env
+        # Verify action spec is Categorical
+        if not isinstance(action_spec_leaf, Categorical):
+            raise ValueError(f"Expected Categorical action spec, got {type(action_spec_leaf)}")
+
+        num_actions_per_agent = action_spec_leaf.space.n
+        num_patrollers = env.num_patrollers
 
     except Exception as e:
-         raise ValueError(f"Could not get transformed specs in create_ppo_models.\n"
-                          f"ObsSpec: {getattr(env, 'observation_spec', 'MISSING')}\n"
-                          f"ActionSpec: {getattr(env, 'action_spec', 'MISSING')}") from e
+        raise ValueError(
+            f"Could not get transformed specs in create_ppo_models.\n"
+            f"ObsSpec: {getattr(env, 'observation_spec', 'MISSING')}\n"
+            f"ActionSpec: {getattr(env, 'action_spec', 'MISSING')}"
+        ) from e
 
-    print(f"Agent create_ppo_models: Flat Obs Dim: {flat_obs_dim}, Num Patrollers: {num_patrollers}, Actions/Agent: {num_actions_per_agent}")
+    print(f"Agent create_ppo_models: Flat Obs Dim: {flat_obs_dim}, "
+          f"Num Patrollers: {num_patrollers}, Actions/Agent: {num_actions_per_agent}")
 
-    # --- Create Actor Network ---
-    # ActorNet needs Np and N_actions_per_agent for correct logit reshaping
+    # Create networks (unchanged)
     actor_net = ActorNet(flat_obs_dim, num_patrollers, num_actions_per_agent, hidden_dim)
+    critic_net = CriticNet(flat_obs_dim, hidden_dim)
 
-    # --- Create Policy Module (Operates on FLAT obs, outputs ROOT action/log_prob) ---
+    # Create policy module with updated spec handling
     policy_module = ProbabilisticActor(
         module=TensorDictModule(
             module=actor_net,
-            in_keys=[flat_obs_key], # Reads "observation_flat"
-            out_keys=[logits_key_root]  # Outputs "logits" (reshaped by ActorNet to [B,Np,N_actions])
+            in_keys=[flat_obs_key],
+            out_keys=[logits_key_root]
         ),
-        spec=action_spec_transformed_leaf, # Spec for root "action" (shape [B, Np])
-        in_keys=[logits_key_root],        # Reads root "logits"
-        out_keys=[action_key_root],       # Writes root "action" (shape [B, Np])
+        spec=action_spec_leaf,  # Use verified Categorical spec
+        in_keys=[logits_key_root],
+        out_keys=[action_key_root],
         distribution_class=torch.distributions.Categorical,
         return_log_prob=True,
-        log_prob_key=log_prob_key_root # Writes root "sample_log_prob" (shape [B, Np])
+        log_prob_key=log_prob_key_root
     ).to(device)
 
-    # --- Create Critic Network ---
-    critic_net = CriticNet(flat_obs_dim, hidden_dim)
-
-    # --- Create Value Module (Operates on FLAT obs, outputs ROOT value) ---
+    # Create value module (unchanged)
     value_module = ValueOperator(
         module=critic_net,
-        in_keys=[flat_obs_key],  # Reads flat observation
-        out_keys=[value_key_root], # Writes root state_value (shape [B, 1])
+        in_keys=[flat_obs_key],
+        out_keys=[value_key_root]
     ).to(device)
 
-    print("Policy Module Created (expects flat_obs, outputs root action/log_prob).")
-    print("Value Module Created (expects flat_obs, outputs root value).")
+    print("Policy Module Created (expects flat_obs, outputs root action/log_prob)")
+    print("Value Module Created (expects flat_obs, outputs root value)")
     return policy_module, value_module
 
 # --- Basic Test (Adjusted for FLATTENED Interface) ---
@@ -152,18 +162,25 @@ if __name__ == "__main__":
     N_ACTIONS_PER_AGENT_MOCK = 5
 
     class MockTransformedEnvSpecs:
-        observation_spec = CompositeSpec({
-            "observation_flat": UnboundedContinuousTensorSpec(
-                shape=torch.Size([FLAT_OBS_DIM_MOCK]), dtype=torch.float32, device=DEFAULT_DEVICE)
+        observation_spec = Composite({
+            "observation_flat": Unbounded(  # Updated class name
+                shape=torch.Size([FLAT_OBS_DIM_MOCK]),
+                dtype=torch.float32,
+                device=DEFAULT_DEVICE
+            )
         }, shape=torch.Size([]))
-        action_spec = CompositeSpec({
-             "action": DiscreteTensorSpec(
-                 n=N_ACTIONS_PER_AGENT_MOCK,
-                 shape=torch.Size([N_PATROLLERS_MOCK]),
-                 dtype=torch.int64, device=DEFAULT_DEVICE)
+
+        action_spec = Composite({
+            "action": Categorical(  # Updated class name
+                n=N_ACTIONS_PER_AGENT_MOCK,
+                shape=torch.Size([N_PATROLLERS_MOCK]),
+                dtype=torch.int64,
+                device=DEFAULT_DEVICE
+            )
         }, shape=torch.Size([]))
+        
         batch_size = torch.Size([])
-        num_patrollers = N_PATROLLERS_MOCK # Policy needs this
+        num_patrollers = N_PATROLLERS_MOCK
 
     print(f"Mock Specs: Obs Flat Shape: {MockTransformedEnvSpecs.observation_spec['observation_flat'].shape}, "
           f"Action Root Shape: {MockTransformedEnvSpecs.action_spec['action'].shape}, "
@@ -200,3 +217,8 @@ if __name__ == "__main__":
     assert td_value_output['state_value'].shape == torch.Size([1])
 
     print("\nBasic Agent/Model Testing (Flattened Interface) Completed.")
+
+
+
+
+
