@@ -1,4 +1,9 @@
-# Patrolling
+# Patrolling: Multi-Agent Reinforcement Learning (TorchRL)
+
+[![CI](https://github.com/elte-collective-intelligence/student-formation/actions/workflows/ci.yml/badge.svg)](https://github.com/elte-collective-intelligence/student-formation/actions/workflows/ci.yml)
+[![Docker](https://github.com/elte-collective-intelligence/student-formation/actions/workflows/docker.yml/badge.svg)](https://github.com/elte-collective-intelligence/student-formation/actions/workflows/docker.yml)
+[![codecov](https://codecov.io/gh/elte-collective-intelligence/student-formation/branch/main/graph/badge.svg)](https://codecov.io/gh/elte-collective-intelligence/student-formation)
+[![License: CC BY-NC-ND 4.0](https://img.shields.io/badge/License-CC--BY--NC--ND%204.0-blue.svg)](LICENSE)
 
 ## Description
 This project explores a multi-agent system where autonomous drones, acting as patrollers and intruders, engage in a strategic pursuit. The patroller drones aim to detect and neutralize intruder drones, while the intruders attempt to reach a specific target point undetected. The primary focus of the project is to investigate how indirect communication among patroller drones can enhance their collective ability to locate and intercept the intruders. By simulating realistic interactions and decision-making processes, this project provides insights into the dynamics of teamwork, strategy, and communication in multi-agent environments.
