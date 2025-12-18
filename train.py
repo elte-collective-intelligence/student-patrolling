@@ -6,6 +6,8 @@ from sb3_contrib import RecurrentPPO
 from stable_baselines3.common.logger import configure
 from stable_baselines3.common.callbacks import EvalCallback, StopTrainingOnNoModelImprovement, BaseCallback
 from stable_baselines3.common.vec_env import VecMonitor
+from supersuit.vector.constructors import MakeCPUAsyncConstructor
+from supersuit.vector.sb3_vector_wrapper import SB3VecEnvWrapper
 
 class RewardLoggingCallback(BaseCallback):
     """
@@ -45,8 +47,32 @@ def train(env_fn, steps: int = 100, seed=0, hyperparams=None, **env_kwargs):
 
     print(f"Starting training on {str(env.metadata['name'])}.")
     env = ss.multiagent_wrappers.pad_observations_v0(env)
-    env = ss.pettingzoo_env_to_vec_env_v1(env)
-    env = ss.concat_vec_envs_v1(env, 20, num_cpus=0, base_class="stable_baselines3")
+
+    def sb3_compatible(seed: int, env_kwargs: dict):
+        e = parallel_env(**env_kwargs)
+        e.reset(seed=seed)
+
+        e = ss.multiagent_wrappers.pad_observations_v0(e)
+        e = ss.pettingzoo_env_to_vec_env_v1(e)
+        return e
+
+    num_vec_envs = 8
+    num_cpus = 8
+
+    tmp_env = sb3_compatible(seed=seed, env_kwargs=env_kwargs)
+    obs_space = tmp_env.observation_space
+    act_space = tmp_env.action_space
+    tmp_env.close()
+
+    def _factory(i):
+        return lambda: sb3_compatible(seed=seed + i, env_kwargs=env_kwargs)
+
+    env_fns = [_factory(i) for i in range(num_vec_envs)]
+
+    cpu_async_vec = MakeCPUAsyncConstructor(num_cpus)(env_fns, obs_space, act_space)
+
+    env = SB3VecEnvWrapper(cpu_async_vec)
+
     env = VecMonitor(env, filename="./logs/")
 
     model = PPO(
