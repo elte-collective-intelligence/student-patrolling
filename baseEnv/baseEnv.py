@@ -3,6 +3,7 @@ import os
 import gymnasium
 import numpy as np
 import pygame
+import pygame.freetype
 from gymnasium import spaces
 from gymnasium.utils import seeding
 
@@ -46,15 +47,15 @@ class BaseEnv(AECEnv):
         super().__init__()
 
         self.render_mode = render_mode
-        pygame.init()
         self.viewer = None
         self.width = 1000
         self.height = 1000
-        self.screen = pygame.Surface([self.width, self.height])
         self.max_size = 1
-        self.game_font = pygame.freetype.Font(
-            os.path.join(os.path.dirname(__file__), "secrcode.ttf"), 24
-        )
+
+        self.window = None
+        self.screen = None
+        self.clock = None
+        self.game_font = None
 
         # Set up the drawing window
 
@@ -297,10 +298,26 @@ class BaseEnv(AECEnv):
             self.render()
 
     def enable_render(self, mode="human"):
-        if not self.renderOn and mode == "human":
-            self.screen = pygame.display.set_mode(self.screen.get_size())
-            self.clock = pygame.time.Clock()
-            self.renderOn = True
+        if self.renderOn:
+            return
+
+        pygame.init()
+
+        if mode == "human":
+            pygame.display.init()
+            self.window = pygame.display.set_mode((self.width, self.height))
+            self.screen = self.window
+
+        elif mode == "rgb_array":
+            self.screen = pygame.Surface((self.width, self.height))
+
+        self.clock = pygame.time.Clock()
+        self.renderOn = True
+
+        if self.game_font is None:
+            self.game_font = pygame.freetype.Font(
+                os.path.join(os.path.dirname(__file__), "secrcode.ttf"), 24
+            )
 
     def render(self):
         if self.render_mode is None:
@@ -311,14 +328,18 @@ class BaseEnv(AECEnv):
 
         self.enable_render(self.render_mode)
 
+        if self.render_mode == "human":
+            pygame.event.pump()
+
         self.draw()
+
         if self.render_mode == "rgb_array":
             observation = np.array(pygame.surfarray.pixels3d(self.screen))
             return np.transpose(observation, axes=(1, 0, 2))
+
         elif self.render_mode == "human":
             pygame.display.flip()
             self.clock.tick(self.metadata["render_fps"])
-            return
 
     def draw(self):
         # Clear screen
@@ -391,8 +412,15 @@ class BaseEnv(AECEnv):
                 )
                 text_line += 1
 
-
     def close(self):
-        if self.screen is not None:
+        try:
+            if self.window is not None:
+                pygame.display.quit()
+                self.window = None
             pygame.quit()
+        except Exception:
+            pass
+        finally:
             self.screen = None
+            self.clock = None
+            self.renderOn = False
