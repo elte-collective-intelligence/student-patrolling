@@ -144,10 +144,21 @@ class BaseEnv(AECEnv):
         )
         return np.concatenate(states, axis=None)
 
+    def _generate_map(self):
+        n_obs = 8
+        obs = []
+        for _ in range(n_obs):
+            x = self.np_random.uniform(-0.9, 0.9)
+            y = self.np_random.uniform(-0.9, 0.9)
+            r = self.np_random.uniform(0.05, 0.12)
+            obs.append((x, y, r))
+        return obs
+
     def reset(self, seed=None, options=None):
         if seed is not None:
             self._seed(seed=seed)
-        self.scenario.reset_world(self.world, self.np_random)
+        self.map_obs = self._generate_map()
+        self.scenario.reset_world(self.world, self.np_random, env_map=self.map_obs)
 
         self.scenario.intruder_won = False
         self.scenario.intruder_caught = False

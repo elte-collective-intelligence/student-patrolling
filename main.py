@@ -29,12 +29,12 @@ def main():
         continuous_actions=False,
         num_intruders=1, 
         num_patrollers=4, 
-        num_obstacles=1
+        num_obstacles=5
     )
     
     env_fn = "patrolEnv"
-    train(env_fn, steps=1e6, seed=16, render_mode=None, hyperparams=None ,**env_kwargs)
-    evaluate(env_fn, num_games=20, render_mode="human", **env_kwargs)
+    train(env_fn, steps=int(1e5), seed=16, render_mode=None, hyperparams=None ,**env_kwargs)
+    evaluate(env_fn, num_games=5, render_mode="human", **env_kwargs)
 
 if __name__ == "__main__":
     main()

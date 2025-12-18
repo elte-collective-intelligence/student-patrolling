@@ -27,7 +27,7 @@ class PatrolEnv(BaseEnv, EzPickle):
         self,
         num_intruders=1,
         num_patrollers=3,
-        num_obstacles=2,
+        num_obstacles=5,
         max_cycles=25,
         continuous_actions=False,
         render_mode=None,
@@ -86,7 +86,7 @@ class Scenario(BaseScenario):
         self.intruder_won = False  # Flag when an intruder reaches the goal
         self.intruder_caught = False  # Flag when an intruder is caught by a patroller
 
-    def make_world(self, num_intruders=1, num_patrollers=3, num_obstacles=2, mode="train"):
+    def make_world(self, num_intruders=1, num_patrollers=3, num_obstacles=5, mode="train"):
         """
         Create the world with agents and landmarks.
 
@@ -112,7 +112,7 @@ class Scenario(BaseScenario):
 
         self._configure_intruders(world, num_intruders, num_patrollers)
 
-        world.landmarks = self.create_static_landmarks()
+        world.landmarks = self.create_landmarks(num_obstacles=num_obstacles)
 
         obs_dim = self._calculate_observation_space(world, num_agents)
         self.observation_space = Box(
@@ -132,7 +132,7 @@ class Scenario(BaseScenario):
         sb = float(getattr(b, "size", 0.0) or 0.0)
         return sa + sb + extra
 
-    def _sample_non_overlapping_pos(self, np_random, world, occupied, low=-0.9, high=0.9, max_tries=5000):
+    def _sample_non_overlapping_pos(self, np_random, world, occupied, candidate_size, low=-0.9, high=0.9, max_tries=5000):
         """
         Samples a position that is at least x away from every entity.
         """
@@ -145,7 +145,6 @@ class Scenario(BaseScenario):
                 if q is None:
                     continue
 
-                candidate_size = 0.05
                 min_sep = float((getattr(ent, "size", 0.0) or 0.0) + candidate_size + 1e-3)
 
                 if np.linalg.norm(p - q) < min_sep:
@@ -158,20 +157,64 @@ class Scenario(BaseScenario):
         p = np_random.uniform(low, high, world.dim_p)
         return p + np_random.uniform(-1e-3, 1e-3, size=world.dim_p)
 
-    def reset_world(self, world, np_random):
+    def _too_close(self, p, q, min_dist) -> bool:
+        return np.linalg.norm(p - q) < float(min_dist)
+
+    def _sample_arena_bounds(self, np_random):
+        """
+        Randomize arena per episode.
+        """
+        arena_half_extent = float(np_random.uniform(0.6, 1.0))
+        return -arena_half_extent, arena_half_extent, arena_half_extent
+
+    def reset_world(self, world, np_random, env_map=None):
         """
         Reset the world's agents and landmarks to initial states.
 
         Args:
             world (PatrolWorld): The world instance to reset.
             np_random (numpy.random.RandomState): Random number generator.
+            env_map (_generate_map): Generated obstacle map.
         """
-        occupied = list(getattr(world, "landmarks", []))
+        occupied = []
+
+        low, high, boundary_limit = self._sample_arena_bounds(np_random)
+        world.boundary_limit = boundary_limit
+
+        goal = self.get_goal_landmark(world)
+        goal_pos = np.array([0.0, 0.0], dtype=np.float32)
+        if goal is not None:
+            goal.state.p_pos = goal_pos
+            occupied.append(goal)
+
+        goal_clear_radius = 0.35
+
+        for lm in world.landmarks:
+            if "goal" in lm.name:
+                continue
+
+            placed = False
+            for _ in range(5000):
+                p = self._sample_non_overlapping_pos(
+                    np_random, world, occupied,
+                    candidate_size=lm.size,
+                    low=low, high=high
+                )
+                if not self._too_close(p, goal_pos, goal_clear_radius):
+                    lm.state.p_pos = p
+                    placed = True
+                    break
+
+            if not placed:
+                lm.state.p_pos = p
+
+            occupied.append(lm)
+
         for agent in world.agents:
             agent.max_speed = 1.5 if agent.patroller else 1.0
 
             agent.state.p_pos = self._sample_non_overlapping_pos(
-                np_random, world, occupied, low=-0.9, high=0.9
+                np_random, world, occupied, candidate_size=agent.size, low=low, high=high
             )
             occupied.append(agent)
 
@@ -180,8 +223,8 @@ class Scenario(BaseScenario):
 
             if agent.patroller:
                 agent.recharging = False
-                agent.last_distance_to_intruder = None  
-                agent.last_position = agent.state.p_pos.copy() 
+                agent.last_distance_to_intruder = None
+                agent.last_position = agent.state.p_pos.copy()
             else:
                 agent.last_distance_to_center = None
                 agent.previous_position = None
@@ -215,7 +258,7 @@ class Scenario(BaseScenario):
             float: Calculated reward.
         """
         reward = 0.0
-        goal_position = np.array([0.0, 0.0])
+        goal_position = self.get_goal_landmark(world).state.p_pos if self.get_goal_landmark(world) is not None else np.array([0.0, 0.0], dtype=np.float32)
 
         current_distance_to_goal = np.linalg.norm(agent.state.p_pos - goal_position)
 
@@ -256,7 +299,7 @@ class Scenario(BaseScenario):
                 break  
 
         # Penalize collisions with boundaries
-        boundary_limit = 1.0 
+        boundary_limit = getattr(world, "boundary_limit", 1.0)
         if (
             np.any(agent.state.p_pos <= -boundary_limit)
             or np.any(agent.state.p_pos >= boundary_limit)
@@ -469,7 +512,7 @@ class Scenario(BaseScenario):
                 landmark.size = 0.1
                 landmark.boundary = False
                 landmark.state.p_pos = landmark_positions[i]
-                landmark.color = np.array([0.65, 0.16, 0.16]) 
+                landmark.color = np.array([0.65, 0.16, 0.16])
             elif i == len(landmark_positions):
                 # Configure the goal landmark
                 landmark.name = "landmark_goal"
@@ -478,7 +521,7 @@ class Scenario(BaseScenario):
                 landmark.size = 0.1
                 landmark.boundary = False
                 landmark.state.p_pos = np.array([0.0, 0.0])
-                landmark.color = np.array([0.25, 0.98, 0.25]) 
+                landmark.color = np.array([0.25, 0.98, 0.25])
             else:
                 # Configure energy stations
                 energy_index = i - len(landmark_positions) - 1
@@ -489,6 +532,32 @@ class Scenario(BaseScenario):
                 landmark.boundary = False
                 landmark.state.p_pos = energy_station_positions[energy_index]
                 landmark.color = np.array([0.68, 0.85, 0.9])
+
+        return landmarks
+
+    def create_landmarks(self, num_obstacles: int):
+        landmarks = []
+
+        for i in range(num_obstacles):
+            lm = Landmark()
+            lm.name = f"landmark_{i}"
+            lm.collide = True
+            lm.movable = False
+            lm.size = 0.1
+            lm.boundary = False
+            lm.color = np.array([0.65, 0.16, 0.16])
+            lm.state.p_pos = np.zeros(2, dtype=np.float32)
+            landmarks.append(lm)
+
+        goal = Landmark()
+        goal.name = "landmark_goal"
+        goal.collide = True
+        goal.movable = False
+        goal.size = 0.1
+        goal.boundary = False
+        goal.color = np.array([0.25, 0.98, 0.25])
+        goal.state.p_pos = np.zeros(2, dtype=np.float32)
+        landmarks.append(goal)
 
         return landmarks
 
