@@ -46,7 +46,7 @@ def train(env_fn, steps: int = 100, seed=0, hyperparams=None, **env_kwargs):
     print(f"Starting training on {str(env.metadata['name'])}.")
     env = ss.multiagent_wrappers.pad_observations_v0(env)
     env = ss.pettingzoo_env_to_vec_env_v1(env)
-    env = ss.concat_vec_envs_v1(env, 20, num_cpus=16, base_class="stable_baselines3")
+    env = ss.concat_vec_envs_v1(env, 20, num_cpus=0, base_class="stable_baselines3")
     env = VecMonitor(env, filename="./logs/")
 
     model = PPO(

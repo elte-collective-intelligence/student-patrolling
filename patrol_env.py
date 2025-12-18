@@ -127,6 +127,37 @@ class Scenario(BaseScenario):
 
         return world
 
+    def _min_sep(self, a, b, extra=1e-3) -> float:
+        sa = float(getattr(a, "size", 0.0) or 0.0)
+        sb = float(getattr(b, "size", 0.0) or 0.0)
+        return sa + sb + extra
+
+    def _sample_non_overlapping_pos(self, np_random, world, occupied, low=-0.9, high=0.9, max_tries=5000):
+        """
+        Samples a position that is at least x away from every entity.
+        """
+        for _ in range(max_tries):
+            p = np_random.uniform(low, high, world.dim_p)
+
+            ok = True
+            for ent in occupied:
+                q = getattr(ent.state, "p_pos", None)
+                if q is None:
+                    continue
+
+                candidate_size = 0.05
+                min_sep = float((getattr(ent, "size", 0.0) or 0.0) + candidate_size + 1e-3)
+
+                if np.linalg.norm(p - q) < min_sep:
+                    ok = False
+                    break
+
+            if ok:
+                return p
+
+        p = np_random.uniform(low, high, world.dim_p)
+        return p + np_random.uniform(-1e-3, 1e-3, size=world.dim_p)
+
     def reset_world(self, world, np_random):
         """
         Reset the world's agents and landmarks to initial states.
@@ -135,10 +166,15 @@ class Scenario(BaseScenario):
             world (PatrolWorld): The world instance to reset.
             np_random (numpy.random.RandomState): Random number generator.
         """
+        occupied = list(getattr(world, "landmarks", []))
         for agent in world.agents:
             agent.max_speed = 1.5 if agent.patroller else 1.0
 
-            agent.state.p_pos = np_random.uniform(-0.9, +0.9, world.dim_p)
+            agent.state.p_pos = self._sample_non_overlapping_pos(
+                np_random, world, occupied, low=-0.9, high=0.9
+            )
+            occupied.append(agent)
+
             agent.state.p_vel = np.zeros(world.dim_p)
             agent.state.c = np.zeros(world.dim_c)
 
