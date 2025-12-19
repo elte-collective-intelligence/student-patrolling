@@ -156,6 +156,49 @@ class Scenario(BaseScenario):
         p = np_random.uniform(low, high, world.dim_p)
         return p + np_random.uniform(-1e-3, 1e-3, size=world.dim_p)
 
+    def _sample_near_edge_pos(self, np_random, world, occupied, candidate_size: float, low: float, high: float, edge_margin: float = 0.15, max_tries: int = 5000,):
+        """
+        Sample a position near the arena boundary.
+        """
+        inset = float(candidate_size) + 1e-3
+        lo = low + inset
+        hi = high - inset
+
+        edge_margin = float(min(edge_margin, (hi - lo) / 2.0))
+
+        for _ in range(max_tries):
+            wall = int(np_random.integers(0, 4))
+
+            if wall == 0:
+                x = np_random.uniform(lo, lo + edge_margin)
+                y = np_random.uniform(lo, hi)
+            elif wall == 1:
+                x = np_random.uniform(hi - edge_margin, hi)
+                y = np_random.uniform(lo, hi)
+            elif wall == 2:
+                x = np_random.uniform(lo, hi)
+                y = np_random.uniform(lo, lo + edge_margin)
+            else:
+                x = np_random.uniform(lo, hi)
+                y = np_random.uniform(hi - edge_margin, hi)
+
+            p = np.array([x, y], dtype=np.float32)
+            ok = True
+            for ent in occupied:
+                q = getattr(ent.state, "p_pos", None)
+                if q is None:
+                    continue
+                min_sep = float((getattr(ent, "size", 0.0) or 0.0) + candidate_size + 1e-3)
+                if np.linalg.norm(p - q) < min_sep:
+                    ok = False
+                    break
+            if ok:
+                return p
+
+        return self._sample_non_overlapping_pos(
+            np_random, world, occupied, candidate_size=candidate_size, low=low, high=high
+        )
+
     def _too_close(self, p, q, min_dist) -> bool:
         return np.linalg.norm(p - q) < float(min_dist)
 
@@ -219,9 +262,16 @@ class Scenario(BaseScenario):
         for agent in world.agents:
             agent.max_speed = 1.5 if agent.patroller else 1.0
 
-            agent.state.p_pos = self._sample_non_overlapping_pos(
-                np_random, world, occupied, candidate_size=agent.size, low=low, high=high
-            )
+            if agent.patroller:
+                agent.state.p_pos = self._sample_non_overlapping_pos(
+                    np_random, world, occupied, candidate_size=agent.size, low=low, high=high
+                )
+            else:
+                agent.state.p_pos = self._sample_near_edge_pos(
+                    np_random, world,
+                    occupied, candidate_size=agent.size, low=low, high=high, edge_margin=0.20,
+                )
+
             occupied.append(agent)
 
             agent.state.p_vel = np.zeros(world.dim_p)
