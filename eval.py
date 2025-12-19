@@ -27,7 +27,7 @@ def evaluate(env_fn, num_games: int = 100, render_mode=None, **env_kwargs):
 
     model = PPO.load(latest_policy)
 
-    rewards = {agent: 0 for agent in env.possible_agents}
+    rewards = {agent: 0.0 for agent in env.possible_agents}
 
     for i in range(num_games):
         env.reset(seed=i)
@@ -38,30 +38,29 @@ def evaluate(env_fn, num_games: int = 100, render_mode=None, **env_kwargs):
         for agent in env.agent_iter():
             obs, reward, termination, truncation, info = env.last()
 
+            if termination or truncation:
+                env.step(None)
+                continue
+
+            act, _ = model.predict(obs, deterministic=True)
+            env.step(act)
+
             if env.render_mode == "rgb_array":
                 frame = env.render()
-                frames.append(frame)
+                if frame is not None:
+                    frames.append(frame)
 
-            for agent in env.agents:
-                rewards[agent] += env.rewards[agent]
+        for agent in env.agents:
+            rewards[agent] += env.rewards[agent]
 
-            if termination or truncation:
-                break
-            else:
-                act = model.predict(obs, deterministic=True)[0]
-
-            env.step(act)
-        if env.render_mode == "human":
-            env.render()
-
-        # Save the frames as a GIF
-        """gif_path = os.path.join("gifs", f"game_{i + 1}.gif")
-        imageio.mimsave(gif_path, frames, fps=40, loop=0)
-        print(f"Saved GIF for game {i + 1} to {gif_path}")"""
+        if env.render_mode == "rgb_array" and len(frames) > 0:
+            gif_path = os.path.join("gifs", f"game_{i + 1}.gif")
+            imageio.mimsave(gif_path, frames, fps=40, loop=0)
+            print(f"Saved GIF for game {i + 1} to {gif_path}")
 
     env.close()
 
-    avg_reward = sum(rewards.values()) / len(rewards.values())
+    avg_reward = sum(rewards.values()) / len(rewards)
     avg_reward_per_agent = {
         agent: rewards[agent] / num_games for agent in env.possible_agents
     }

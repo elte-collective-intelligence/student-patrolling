@@ -16,3 +16,4 @@ gymnasium>=0.29.0
 supersuit>=3.9.0
 tensorboard
 mpe2
+imageio
