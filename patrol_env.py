@@ -55,7 +55,7 @@ class PatrolEnv(BaseEnv, EzPickle):
         )
 
         scenario = Scenario()
-        world = scenario.make_world(num_intruders, num_patrollers, num_obstacles, mode)
+        world = scenario.make_world(num_intruders, num_patrollers, num_obstacles, mode, continuous_actions=continuous_actions,)
 
         BaseEnv.__init__(
             self,
@@ -86,7 +86,7 @@ class Scenario(BaseScenario):
         self.intruder_won = False  # Flag when an intruder reaches the goal
         self.intruder_caught = False  # Flag when an intruder is caught by a patroller
 
-    def make_world(self, num_intruders=1, num_patrollers=3, num_obstacles=5, mode="train"):
+    def make_world(self, num_intruders=1, num_patrollers=3, num_obstacles=5, mode="train", continuous_actions=False):
         """
         Create the world with agents and landmarks.
 
@@ -103,6 +103,7 @@ class Scenario(BaseScenario):
 
         self.mode = mode
         self.scale_factor = 100.0
+        self.continuous_actions = continuous_actions
 
         num_agents = num_intruders + num_patrollers
 
@@ -118,12 +119,6 @@ class Scenario(BaseScenario):
         self.observation_space = Box(
             low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
         )
-
-        action_space = Discrete(5) 
-
-        # Assign action space to all agents
-        for agent in world.agents:
-            agent.action_space = action_space
 
         return world
 

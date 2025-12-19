@@ -65,9 +65,9 @@ class PatrolWorld(World):
         # integrate physical state
         self.integrate_state(p_force)
 
-        # Clip agent positions to stay within bounds [-1, 1]
+        limit = getattr(self, "boundary_limit", 1.0)
         for agent in self.agents:
-            agent.state.p_pos = np.clip(agent.state.p_pos, -1.0, 1.0)
+            agent.state.p_pos = np.clip(agent.state.p_pos, -limit, limit)
 
         self.resolve_degenerate_overlaps(extra=1e-6, max_passes=3)
 

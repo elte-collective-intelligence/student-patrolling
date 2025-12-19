@@ -82,26 +82,22 @@ class BaseEnv(AECEnv):
         self.observation_spaces = dict()
         state_dim = 0
         for agent in self.world.agents:
-            if agent.movable:
-                space_dim = self.world.dim_p * 2 + 1
-            elif self.continuous_actions:
-                space_dim = 0
-            else:
-                space_dim = 1
-            if not agent.silent:
-                if self.continuous_actions:
-                    space_dim += self.world.dim_c
-                else:
-                    space_dim *= self.world.dim_c
-
             obs_dim = len(self.scenario.observation(agent, self.world))
             state_dim += obs_dim
             if self.continuous_actions:
-                self.action_spaces[agent.name] = spaces.Box(
-                    low=0, high=1, shape=(space_dim,)
-                )
+                if agent.movable:
+                    self.action_spaces[agent.name] = spaces.Box(
+                        low=-1.0, high=1.0, shape=(self.world.dim_p,), dtype=np.float32
+                    )
+                else:
+                    self.action_spaces[agent.name] = spaces.Box(
+                        low=-1.0, high=1.0, shape=(0,), dtype=np.float32
+                    )
             else:
-                self.action_spaces[agent.name] = spaces.Discrete(space_dim)
+                if agent.movable:
+                    self.action_spaces[agent.name] = spaces.Discrete(5)
+                else:
+                    self.action_spaces[agent.name] = spaces.Discrete(1)
             self.observation_spaces[agent.name] = spaces.Box(
                 low=-np.float32(np.inf),
                 high=+np.float32(np.inf),
@@ -239,15 +235,16 @@ class BaseEnv(AECEnv):
             action = self.current_actions[i]
             scenario_action = []
             if agent.movable:
-                mdim = self.world.dim_p * 2 + 1
                 if self.continuous_actions:
-                    scenario_action.append(action[0:mdim])
-                    action = action[mdim:]
+                    scenario_action.append(np.asarray(action, dtype=np.float32))
                 else:
-                    scenario_action.append(action % mdim)
-                    action //= mdim
-            if not agent.silent:
-                scenario_action.append(action)
+                    scenario_action.append(int(action))
+
+            if (not agent.silent) and (self.world.dim_c > 0):
+                raise NotImplementedError(
+                    "Communication actions are enabled but not implementd."
+                )
+
             self._set_action(scenario_action, agent, self.action_spaces[agent.name])
 
         self.world.step()
@@ -274,28 +271,27 @@ class BaseEnv(AECEnv):
 
     # set env action for a particular agent
     def _set_action(self, action, agent, action_space, time=None):
-        agent.action.u = np.zeros(self.world.dim_p)
-        agent.action.c = np.zeros(self.world.dim_c)
+        agent.action.u = np.zeros(self.world.dim_p, dtype=np.float32)
+        agent.action.c = np.zeros(self.world.dim_c, dtype=np.float32)
 
         if agent.movable:
             # physical action
-            agent.action.u = np.zeros(self.world.dim_p)
+            agent.action.u = np.zeros(self.world.dim_p, dtype=np.float32)
+
             if self.continuous_actions:
-                # Process continuous action as in OpenAI MPE
-                # Note: this ordering preserves the same movement direction as in the discrete case
-                agent.action.u[0] += action[0][2] - action[0][1]
-                agent.action.u[1] += action[0][4] - action[0][3]
+                u = np.clip(np.asarray(action[0], dtype=np.float32), -1.0, 1.0)
+                agent.action.u[:] = u
             else:
                 # process discrete action
-                if action[0] == 0:
+                if int(action[0]) == 0:
                     pass
-                if action[0] == 1:
+                elif int(action[0]) == 1:
                     agent.action.u[0] = -1.0
-                if action[0] == 2:
+                elif int(action[0]) == 2:
                     agent.action.u[0] = +1.0
-                if action[0] == 3:
+                elif int(action[0]) == 3:
                     agent.action.u[1] = -1.0
-                if action[0] == 4:
+                elif int(action[0]) == 4:
                     agent.action.u[1] = +1.0
             sensitivity = 5.0
             if agent.accel is not None:
@@ -305,10 +301,10 @@ class BaseEnv(AECEnv):
         if not agent.silent:
             # communication action
             if self.continuous_actions:
-                agent.action.c = action[0]
+                agent.action.c = np.asarray(action[0], dtype=np.float32)
             else:
-                agent.action.c = np.zeros(self.world.dim_c)
-                agent.action.c[action[0]] = 1.0
+                agent.action.c = np.zeros(self.world.dim_c, dtype=np.float32)
+                agent.action.c[int(action[0])] = 1.0
             action = action[1:]
         # make sure we used all elements of action
         assert len(action) == 0
