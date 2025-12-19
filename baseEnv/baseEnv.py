@@ -58,7 +58,6 @@ class BaseEnv(AECEnv):
         self.game_font = None
 
         # Set up the drawing window
-
         self.renderOn = False
         self._seed()
 
@@ -118,7 +117,6 @@ class BaseEnv(AECEnv):
         )
 
         self.steps = 0
-
         self.current_actions = [None] * self.num_agents
 
     def observation_space(self, agent):
@@ -154,6 +152,67 @@ class BaseEnv(AECEnv):
             obs.append((x, y, r))
         return obs
 
+
+    #  ENERGY + RECHARGE
+
+
+    def _handle_recharge(self):
+        """
+        Recharge patrollers when inside an energy station landmark.
+        Stations are landmarks whose name contains 'energy_station'.
+        """
+        for agent in self.world.agents:
+            if not getattr(agent, "patroller", False):
+                continue
+
+            # Safety
+            if not hasattr(agent, "energy") or not hasattr(agent, "max_energy"):
+                continue
+
+            agent.recharging = False
+
+            # If no landmarks exist, do nothing
+            if not hasattr(self.world, "landmarks"):
+                continue
+
+            for lm in self.world.landmarks:
+                if "energy_station" not in getattr(lm, "name", ""):
+                    continue
+
+                dist = np.linalg.norm(agent.state.p_pos - lm.state.p_pos)
+                if dist <= (agent.size + lm.size):
+                    agent.recharging = True
+                    agent.energy = min(agent.max_energy, agent.energy + 2.0)  # recharge rate
+                    break
+
+    def _update_energy(self):
+        """
+        Drain energy for patrollers based on velocity.
+        Intruders ignore energy completely.
+        """
+        for agent in self.world.agents:
+            if not getattr(agent, "patroller", False):
+                continue  # intruders ignore energy
+
+            if getattr(agent, "recharging", False):
+                continue
+
+            # Safety: if energy attrs are missing, skip instead of crashing
+            if not hasattr(agent, "energy") or not hasattr(agent, "max_energy"):
+                continue
+
+            velocity = np.linalg.norm(agent.state.p_vel)
+            energy_cost = 0.3 * velocity
+            agent.energy = max(0.0, agent.energy - energy_cost)
+
+            # If out of energy, stop movement
+            if agent.energy <= 0.0:
+                agent.state.p_vel[:] = 0.0
+                agent.max_speed = 0.0
+            else:
+                # Restore normal speed if energy is available
+                agent.max_speed = 1.5
+
     def reset(self, seed=None, options=None):
         if seed is not None:
             self._seed(seed=seed)
@@ -172,7 +231,6 @@ class BaseEnv(AECEnv):
 
         self.agent_selection = self._agent_selector.reset()
         self.steps = 0
-
         self.current_actions = [None] * self.num_agents
 
     def _execute_world_step(self):
@@ -193,6 +251,10 @@ class BaseEnv(AECEnv):
             self._set_action(scenario_action, agent, self.action_spaces[agent.name])
 
         self.world.step()
+
+        # Recharge first, then drain
+        self._handle_recharge()
+        self._update_energy()
 
         global_reward = 0.0
         if self.local_ratio is not None:
@@ -286,11 +348,8 @@ class BaseEnv(AECEnv):
                     self.truncations[a] = True
 
             # If the episode ended this step, populate info["episode"]
-            # The episode ends if all agents are done (terminated or truncated)
             if all(self.terminations[a] or self.truncations[a] for a in self.agents):
-                # Here, we record the final episodic info
                 for a in self.agents:
-                    # Provide episode info with the cumulative reward and length
                     self.infos[a]["episode"] = {
                         "r": self._cumulative_rewards[a],
                         "l": self.steps
@@ -298,13 +357,10 @@ class BaseEnv(AECEnv):
                 return
 
         else:
-            # Not all agents have acted yet, so clear rewards for the next agent's turn
             self._clear_rewards()
 
-        # Accumulate rewards for current agent
         self._accumulate_rewards()
 
-        # Render if needed
         if self.render_mode == "human":
             self.render()
 
@@ -356,53 +412,46 @@ class BaseEnv(AECEnv):
         # Clear screen
         self.screen.fill((255, 255, 255))
 
-        # Update bounds to center around agent
         all_poses = [entity.state.p_pos for entity in self.world.entities]
         cam_range = np.max(np.abs(np.array(all_poses)))
         cam_range = 1.0
 
-        # Separate entities into agents and others (e.g., landmarks)
         agents = [entity for entity in self.world.entities if isinstance(entity, Agent)]
         other_entities = [
             entity for entity in self.world.entities if not isinstance(entity, Agent)
         ]
 
-        # Function to calculate screen coordinates
         def calculate_screen_coords(x, y):
-            y *= -1  # Flip y-axis to mimic old pyglet setup
-            x = (x / cam_range) * self.width // 2 * 0.9  # Normalize x
-            y = (y / cam_range) * self.height // 2 * 0.9  # Normalize y
+            y *= -1
+            x = (x / cam_range) * self.width // 2 * 0.9
+            y = (y / cam_range) * self.height // 2 * 0.9
             x += self.width // 2
             y += self.height // 2
             return int(x), int(y)
 
-        # Draw non-agent entities (e.g., energy stations, landmarks) first
         for entity in other_entities:
             x, y = calculate_screen_coords(*entity.state.p_pos)
             pygame.draw.circle(
                 self.screen, entity.color * 200, (x, y), entity.size * 350
-            )  # 350 is an arbitrary scale factor
+            )
             pygame.draw.circle(
                 self.screen, (0, 0, 0), (x, y), entity.size * 350, 1
-            )  # Draw borders
+            )
 
-        # Draw agents on top
         for agent in agents:
             x, y = calculate_screen_coords(*agent.state.p_pos)
             pygame.draw.circle(
                 self.screen, agent.color * 200, (x, y), agent.size * 350
-            )  # Draw patroller
+            )
             pygame.draw.circle(
                 self.screen, (0, 0, 0), (x, y), agent.size * 350, 1
-            )  # Draw borders
+            )
 
-            # Draw the patrol radius around patrollers
             if isinstance(agent, Agent):
                 pygame.draw.circle(
                     self.screen, (0, 191, 255), (x, y), agent.patrol_radius * 350, 2
-                )  # Light blue circle
+                )
 
-        # Optionally render messages
         text_line = 0
         for agent in agents:
             if not agent.silent:
