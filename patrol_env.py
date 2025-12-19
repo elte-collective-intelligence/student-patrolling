@@ -231,7 +231,7 @@ class Scenario(BaseScenario):
         world.boundary_limit = boundary_limit
 
         goal = self.get_goal_landmark(world)
-        goal_pos = np.array([0.0, 0.0], dtype=np.float32)
+        goal_pos = np_random.uniform(-0.25, 0.25, size=2)
         if goal is not None:
             goal.state.p_pos = goal_pos
             occupied.append(goal)
