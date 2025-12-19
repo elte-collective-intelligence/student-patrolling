@@ -8,7 +8,7 @@ from sb3_contrib import RecurrentPPO
 import imageio
 
 
-def evaluate(env_fn, num_games: int = 100, render_mode=None, **env_kwargs):
+def evaluate(num_games: int = 100, render_mode=None, **env_kwargs):
     os.makedirs("gifs", exist_ok=True)
 
     env = env_f(render_mode=render_mode, **env_kwargs)
@@ -22,22 +22,24 @@ def evaluate(env_fn, num_games: int = 100, render_mode=None, **env_kwargs):
             glob.glob(f"{env.metadata['name']}*.zip"), key=os.path.getctime
         )
     except ValueError:
-        print("Policy not found.")
-        exit(0)
+        raise FileNotFoundError("Policy not found.")
 
     model = PPO.load(latest_policy)
 
     rewards = {agent: 0.0 for agent in env.possible_agents}
+    patroller_win_count = 0
+    intruder_success_count = 0
 
     for i in range(num_games):
         env.reset(seed=i)
-        env.action_space(env.possible_agents[0]).seed(i)
+        ep_rewards = {agent: 0.0 for agent in env.possible_agents}
 
         frames = []
 
         for agent in env.agent_iter():
             obs, reward, termination, truncation, info = env.last()
 
+            ep_rewards[agent] += float(reward)
             if termination or truncation:
                 env.step(None)
                 continue
@@ -50,8 +52,12 @@ def evaluate(env_fn, num_games: int = 100, render_mode=None, **env_kwargs):
                 if frame is not None:
                     frames.append(frame)
 
-        for agent in env.agents:
-            rewards[agent] += env.rewards[agent]
+        scen = env.unwrapped.scenario
+        intruder_success_count += int(getattr(scen, "intruder_won", False))
+        patroller_win_count += int(getattr(scen, "intruder_caught", False) and not getattr(scen, "intruder_won", False))
+
+        for agent in env.possible_agents:
+            rewards[agent] += ep_rewards[agent]
 
         if env.render_mode == "rgb_array" and len(frames) > 0:
             gif_path = os.path.join("gifs", f"game_{i + 1}.gif")
@@ -60,13 +66,22 @@ def evaluate(env_fn, num_games: int = 100, render_mode=None, **env_kwargs):
 
     env.close()
 
-    avg_reward = sum(rewards.values()) / len(rewards)
-    avg_reward_per_agent = {
-        agent: rewards[agent] / num_games for agent in env.possible_agents
-    }
+    avg_reward_per_agent = {a: rewards[a] / num_games for a in rewards}
+    avg_reward = float(np.mean(list(avg_reward_per_agent.values())))
     print(f"Avg reward: {avg_reward}")
     print("Avg reward per agent, per game: ", avg_reward_per_agent)
     print("Full rewards: ", rewards)
+
+    patrollers = [a for a in avg_reward_per_agent if "patroller" in a]
+    intruders = [a for a in avg_reward_per_agent if "intruder" in a]
+
+    patroller_team_mean = float(np.mean([avg_reward_per_agent[a] for a in patrollers]))
+    intruder_mean = float(np.mean([avg_reward_per_agent[a] for a in intruders]))
+
+    print("Patroller team mean score:", patroller_team_mean)
+    print("Intruder score:", intruder_mean)
+    print("Patroller win rate:", patroller_win_count / num_games)
+    print("Intruder win rate:", intruder_success_count / num_games)
 
     return avg_reward
 
@@ -77,7 +92,7 @@ def evaluate_optim(model, env, num_games: int = 10, render_mode=None, **env_kwar
         env.reset(seed=i)
         frames = []
 
-        for agent in env.agent_iter():
+        for _ in env.agent_iter():
             obs, reward, termination, truncation, info = env.last()
 
             if env.render_mode == "rgb_array":

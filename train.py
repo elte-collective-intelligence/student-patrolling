@@ -185,7 +185,7 @@ def train(env_fn, steps: int = 100, seed=0, hyperparams=None, **env_kwargs):
         eval_env,
         best_model_save_path=os.path.join(tmp_path, "best_model"),
         log_path=os.path.join(tmp_path, "eval_logs"),
-        eval_freq=int(hyperparams.get("eval_freq", 100)),
+        eval_freq=int(hyperparams.get("eval_freq", 1000)),
         n_eval_episodes=int(hyperparams.get("n_eval_episodes", 20)),
         deterministic=True,
         render=False,
