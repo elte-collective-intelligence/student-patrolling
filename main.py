@@ -33,7 +33,7 @@ def main():
     )
     
     env_fn = "patrolEnv"
-    train(env_fn, steps=int(1e5), seed=16, render_mode=None, hyperparams=None ,**env_kwargs)
+    train(env_fn, steps=int(5e4), seed=16, render_mode=None, hyperparams=None ,**env_kwargs)
     evaluate(env_fn, num_games=5, render_mode="human", **env_kwargs)
 
 if __name__ == "__main__":

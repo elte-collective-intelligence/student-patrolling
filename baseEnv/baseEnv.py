@@ -215,8 +215,6 @@ class BaseEnv(AECEnv):
         self.map_obs = self._generate_map()
         self.scenario.reset_world(self.world, self.np_random, env_map=self.map_obs)
 
-        self.scenario.intruder_won = False
-        self.scenario.intruder_caught = False
 
         self.agents = self.possible_agents[:]
         self.rewards = {name: 0.0 for name in self.agents}
@@ -327,6 +325,7 @@ class BaseEnv(AECEnv):
             # All agents have acted, now we advance the world
             self._execute_world_step()
             self.steps += 1
+            self.scenario.episode_steps += 1
 
             # Check termination conditions from your scenario
             if self.scenario.intruder_won:
@@ -345,12 +344,9 @@ class BaseEnv(AECEnv):
 
             # If the episode ended this step, populate info["episode"]
             if all(self.terminations[a] or self.truncations[a] for a in self.agents):
+                metrics = self.scenario.episode_metrics()
                 for a in self.agents:
-                    self.infos[a]["episode"] = {
-                        "r": self._cumulative_rewards[a],
-                        "l": self.steps
-                    }
-                return
+                    self.infos[a].update(metrics)
 
         else:
             self._clear_rewards()

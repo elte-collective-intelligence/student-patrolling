@@ -86,6 +86,10 @@ class Scenario(BaseScenario):
         self.intruder_won = False  # Flag when an intruder reaches the goal
         self.intruder_caught = False  # Flag when an intruder is caught by a patroller
 
+        self.episode_steps = 0
+        self.time_to_intruder_success = None
+        self.time_to_capture = None
+
     def make_world(self, num_intruders=1, num_patrollers=3, num_obstacles=5, mode="train", continuous_actions=False):
         """
         Create the world with agents and landmarks.
@@ -171,6 +175,13 @@ class Scenario(BaseScenario):
             np_random (numpy.random.RandomState): Random number generator.
             env_map (_generate_map): Generated obstacle map.
         """
+
+        self.intruder_won = False
+        self.intruder_caught = False
+        self.episode_steps = 0
+        self.time_to_intruder_success = None
+        self.time_to_capture = None
+
         occupied = []
 
         low, high, boundary_limit = self._sample_arena_bounds(np_random)
@@ -224,6 +235,20 @@ class Scenario(BaseScenario):
                 agent.last_distance_to_center = None
                 agent.previous_position = None
 
+    def episode_metrics(self):
+        intruder_success = int(self.intruder_won)
+        intruder_caught = int(self.intruder_caught)
+        patroller_win = int((not self.intruder_won) and self.intruder_caught)
+
+        return {
+            "intruder_success": intruder_success,
+            "intruder_caught": intruder_caught,
+            "patroller_win": patroller_win,
+            "time_to_capture": self.time_to_capture,
+            "time_to_intruder_success": self.time_to_intruder_success,
+            "episode_steps": self.episode_steps,
+        }
+
     def reward(self, agent, world):
         """
         Assign rewards to agents based on their type.
@@ -267,6 +292,8 @@ class Scenario(BaseScenario):
                 if self.is_collision(agent, other_agent):
                     reward -= 10.0  # Penalty for being caught
                     self.intruder_caught = True
+                    if self.time_to_capture is None:
+                        self.time_to_capture = self.episode_steps
 
                     if self.mode == "train":
                         logger.info(f"Intruder {agent.name} loses by getting caught by {other_agent.name}!")
@@ -286,6 +313,8 @@ class Scenario(BaseScenario):
                 if "goal" in landmark.name:
                     reward += 100.0  # Large bonus for reaching the goal
                     self.intruder_won = True
+                    if self.time_to_intruder_success is None:
+                        self.time_to_intruder_success = self.episode_steps
                     if self.mode == "train":
                         logger.info(f"Intruder {agent.name} wins by reaching the center!")
                     return reward
