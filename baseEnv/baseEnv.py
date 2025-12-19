@@ -278,6 +278,7 @@ class BaseEnv(AECEnv):
 
             if self.continuous_actions:
                 u = np.clip(np.asarray(action[0], dtype=np.float32), -1.0, 1.0)
+                u = 4.0 * u
                 agent.action.u[:] = u
             else:
                 # process discrete action
