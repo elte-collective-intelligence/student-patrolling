@@ -554,6 +554,24 @@ class Scenario(BaseScenario):
         goal.state.p_pos = np.zeros(2, dtype=np.float32)
         landmarks.append(goal)
 
+        energy_station_positions = [
+            np.array([-1.0, 1.0], dtype=np.float32),
+            np.array([1.0, 1.0], dtype=np.float32),
+            np.array([-1.0, -1.0], dtype=np.float32),
+            np.array([1.0, -1.0], dtype=np.float32),
+        ]
+
+        for idx, pos in enumerate(energy_station_positions):
+            st = Landmark()
+            st.name = f"energy_station_{idx}"
+            st.collide = False
+            st.movable = False
+            st.size = 0.15
+            st.boundary = False
+            st.color = np.array([0.68, 0.85, 0.9])
+            st.state.p_pos = pos
+            landmarks.append(st)
+
         return landmarks
 
     def _configure_patrollers(self, world, num_patrollers):
