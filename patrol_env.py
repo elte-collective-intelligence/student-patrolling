@@ -580,9 +580,11 @@ class Scenario(BaseScenario):
             agent.patroller = True
             agent.alive = True
             agent.patrol_radius = 0.25
-            agent.color = np.array([0.25, 0.25, 0.98]) 
-            #agent.energy = 100.0  # Initial energy level
-            agent.recharging = False  # Recharging state
+            agent.color = np.array([0.25, 0.25, 0.98])
+
+            agent.max_energy = 100.0
+            agent.energy = agent.max_energy
+            agent.recharging = False
 
     """def reduce_energy(self, agent):
         if agent.recharging:
