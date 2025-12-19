@@ -349,12 +349,22 @@ class BaseEnv(AECEnv):
 
             # If the episode ended this step, populate info["episode"]
             if all(self.terminations[a] or self.truncations[a] for a in self.agents):
+                if self.scenario.intruder_won:
+                    outcome = "intruders_win"
+                elif self.scenario.intruder_caught:
+                    outcome = "patrollers_win"
+                else:
+                    outcome = "timeout"
+
                 for a in self.agents:
                     self.infos[a]["episode"] = {
                         "r": self._cumulative_rewards[a],
-                        "l": self.steps
+                        "l": self.steps,
+                        "outcome": outcome
                     }
+
                 return
+
 
         else:
             self._clear_rewards()

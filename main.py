@@ -1,4 +1,7 @@
+print(">>> RUNNING MODIFIEDxxxxx MAIN.PY <<<")
+
 from pettingzoo.mpe._mpe_utils.simple_env import make_env
+
 import glob
 import os
 import time
@@ -9,7 +12,7 @@ import supersuit as ss
 from stable_baselines3 import PPO
 from stable_baselines3.ppo import CnnPolicy, MlpPolicy
 
-from train import train
+from train import train, run_task4_2
 from sb3_contrib import RecurrentPPO
 from stable_baselines3.common.evaluation import evaluate_policy
 from stable_baselines3 import DQN
@@ -25,16 +28,33 @@ from pettingzoo.test.api_test import missing_attr_warning
 
 def main():
     env_kwargs = dict(
-        max_cycles=120,
+        num_intruders=1,
+        num_patrollers=3,
+        num_obstacles=5,
+        max_cycles=25,
         continuous_actions=False,
-        num_intruders=1, 
-        num_patrollers=4, 
-        num_obstacles=5
+        render_mode=None,
+        mode="train",
     )
-    
-    env_fn = "patrolEnv"
-    train(env_fn, steps=int(1e5), seed=16, render_mode=None, hyperparams=None ,**env_kwargs)
-    evaluate(env_fn, num_games=5, render_mode="human", **env_kwargs)
+
+    # 1) Train meta-learning baseline
+    model = train(
+        steps=100_000,
+        seed=16,
+        **env_kwargs
+    )
+
+    # 2) Run Task 4.2 calibration + held-out evaluation
+    base_kwargs = dict(
+        num_intruders=1,
+        num_patrollers=3,
+        max_cycles=25,
+        continuous_actions=False,
+        render_mode=None,
+        mode="train",
+    )
+
+    run_task4_2(model, base_kwargs)
 
 if __name__ == "__main__":
     main()
