@@ -10,7 +10,7 @@ class PatrolWorld(World):
         sb = float(getattr(b, "size", 0.0) or 0.0)
         return sa + sb + extra
 
-    def resolve_degenerate_overlaps(self, extra=1e-6, max_passes=2):
+    def resolve_perfect_overlaps(self, extra=1e-8, max_passes=2):
         """
         Prevent zero-distance overlaps
         """
@@ -35,15 +35,11 @@ class PatrolWorld(World):
 
                     d = pj - pi
                     dist = float(np.linalg.norm(d))
-                    min_sep = self._min_sep(ei, ej, extra=extra)
+                    min_sep = float(extra)
 
                     if dist < min_sep:
-                        if dist < 1e-12:
-                            direction = np.random.uniform(-1.0, 1.0, size=pi.shape)
-                            direction /= (np.linalg.norm(direction) + 1e-12)
-                        else:
-                            direction = d / (dist + 1e-12)
-
+                        direction = np.random.uniform(-1.0, 1.0, size=pi.shape)
+                        direction /= (np.linalg.norm(direction) + 1e-12)
                         push = 0.5 * (min_sep - dist) * direction
                         ei.state.p_pos = pi - push
                         ej.state.p_pos = pj + push
@@ -69,7 +65,7 @@ class PatrolWorld(World):
         for agent in self.agents:
             agent.state.p_pos = np.clip(agent.state.p_pos, -limit, limit)
 
-        self.resolve_degenerate_overlaps(extra=1e-6, max_passes=3)
+        self.resolve_perfect_overlaps(extra=1e-8, max_passes=3)
 
         # update agent state
         for agent in self.agents:
