@@ -12,10 +12,11 @@ This project explores a multi-agent system where autonomous drones, acting as pa
 ![current version](images/run1.png)
 ![demo](gifs/game_17.gif)
 
-## Installation
+## Installation and startup
 1. git clone git@gitlab.inf.elte.hu:student-projects-and-thesis/collective-intelligence/patrolling.git
-2. cd patrolling
-3. pip install -r requirements.txt
+2. build container: docker build --no-cache -t patrolling .
+3. run container for development: docker run --rm -it -v ${PWD}:/app -w /app patrolling
+4. start the app with graphical support: wsl -d Ubuntu -- bash -lc 'cd /mnt/d/Random/col_int_as && docker run --rm -it -v "$PWD":/app -w /app -e DISPLAY -e WAYLAND_DISPLAY -e XDG_RUNTIME_DIR -e SDL_VIDEODRIVER=x11 -v /tmp/.X11-unix:/tmp/.X11-unix -v /mnt/wslg:/mnt/wslg patrolling python main.py'
 
 ## Usage
 Run: python3 main.py

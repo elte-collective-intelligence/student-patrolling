@@ -3,6 +3,7 @@ import os
 import gymnasium
 import numpy as np
 import pygame
+import pygame.freetype
 from gymnasium import spaces
 from gymnasium.utils import seeding
 
@@ -46,18 +47,17 @@ class BaseEnv(AECEnv):
         super().__init__()
 
         self.render_mode = render_mode
-        pygame.init()
         self.viewer = None
         self.width = 1000
         self.height = 1000
-        self.screen = pygame.Surface([self.width, self.height])
         self.max_size = 1
-        self.game_font = pygame.freetype.Font(
-            os.path.join(os.path.dirname(__file__), "secrcode.ttf"), 24
-        )
+
+        self.window = None
+        self.screen = None
+        self.clock = None
+        self.game_font = None
 
         # Set up the drawing window
-
         self.renderOn = False
         self._seed()
 
@@ -82,26 +82,22 @@ class BaseEnv(AECEnv):
         self.observation_spaces = dict()
         state_dim = 0
         for agent in self.world.agents:
-            if agent.movable:
-                space_dim = self.world.dim_p * 2 + 1
-            elif self.continuous_actions:
-                space_dim = 0
-            else:
-                space_dim = 1
-            if not agent.silent:
-                if self.continuous_actions:
-                    space_dim += self.world.dim_c
-                else:
-                    space_dim *= self.world.dim_c
-
             obs_dim = len(self.scenario.observation(agent, self.world))
             state_dim += obs_dim
             if self.continuous_actions:
-                self.action_spaces[agent.name] = spaces.Box(
-                    low=0, high=1, shape=(space_dim,)
-                )
+                if agent.movable:
+                    self.action_spaces[agent.name] = spaces.Box(
+                        low=-1.0, high=1.0, shape=(self.world.dim_p,), dtype=np.float32
+                    )
+                else:
+                    self.action_spaces[agent.name] = spaces.Box(
+                        low=-1.0, high=1.0, shape=(0,), dtype=np.float32
+                    )
             else:
-                self.action_spaces[agent.name] = spaces.Discrete(space_dim)
+                if agent.movable:
+                    self.action_spaces[agent.name] = spaces.Discrete(5)
+                else:
+                    self.action_spaces[agent.name] = spaces.Discrete(1)
             self.observation_spaces[agent.name] = spaces.Box(
                 low=-np.float32(np.inf),
                 high=+np.float32(np.inf),
@@ -117,7 +113,6 @@ class BaseEnv(AECEnv):
         )
 
         self.steps = 0
-
         self.current_actions = [None] * self.num_agents
 
     def observation_space(self, agent):
@@ -143,13 +138,83 @@ class BaseEnv(AECEnv):
         )
         return np.concatenate(states, axis=None)
 
+    def _generate_map(self):
+        n_obs = 8
+        obs = []
+        for _ in range(n_obs):
+            x = self.np_random.uniform(-0.9, 0.9)
+            y = self.np_random.uniform(-0.9, 0.9)
+            r = self.np_random.uniform(0.05, 0.12)
+            obs.append((x, y, r))
+        return obs
+
+
+    #  ENERGY + RECHARGE
+
+
+    def _handle_recharge(self):
+        """
+        Recharge patrollers when inside an energy station landmark.
+        Stations are landmarks whose name contains 'energy_station'.
+        """
+        for agent in self.world.agents:
+            if not getattr(agent, "patroller", False):
+                continue
+
+            # Safety
+            if not hasattr(agent, "energy") or not hasattr(agent, "max_energy"):
+                continue
+
+            agent.recharging = False
+
+            # If no landmarks exist, do nothing
+            if not hasattr(self.world, "landmarks"):
+                continue
+
+            for lm in self.world.landmarks:
+                if "energy_station" not in getattr(lm, "name", ""):
+                    continue
+
+                dist = np.linalg.norm(agent.state.p_pos - lm.state.p_pos)
+                if dist <= (agent.size + lm.size):
+                    agent.recharging = True
+                    agent.energy = min(agent.max_energy, agent.energy + 2.0)  # recharge rate
+                    break
+
+    def _update_energy(self):
+        """
+        Drain energy for patrollers based on velocity.
+        Intruders ignore energy completely.
+        """
+        for agent in self.world.agents:
+            if not getattr(agent, "patroller", False):
+                continue  # intruders ignore energy
+
+            if getattr(agent, "recharging", False):
+                continue
+
+            # Safety: if energy attrs are missing, skip instead of crashing
+            if not hasattr(agent, "energy") or not hasattr(agent, "max_energy"):
+                continue
+
+            velocity = np.linalg.norm(agent.state.p_vel)
+            energy_cost = 0.3 * velocity
+            agent.energy = max(0.0, agent.energy - energy_cost)
+
+            # If out of energy, stop movement
+            if agent.energy <= 0.0:
+                agent.state.p_vel[:] = 0.0
+                agent.max_speed = 0.0
+            else:
+                # Restore normal speed if energy is available
+                agent.max_speed = 1.5
+
     def reset(self, seed=None, options=None):
         if seed is not None:
             self._seed(seed=seed)
-        self.scenario.reset_world(self.world, self.np_random)
+        self.map_obs = self._generate_map()
+        self.scenario.reset_world(self.world, self.np_random, env_map=self.map_obs)
 
-        self.scenario.intruder_won = False
-        self.scenario.intruder_caught = False
 
         self.agents = self.possible_agents[:]
         self.rewards = {name: 0.0 for name in self.agents}
@@ -160,7 +225,6 @@ class BaseEnv(AECEnv):
 
         self.agent_selection = self._agent_selector.reset()
         self.steps = 0
-
         self.current_actions = [None] * self.num_agents
 
     def _execute_world_step(self):
@@ -169,18 +233,23 @@ class BaseEnv(AECEnv):
             action = self.current_actions[i]
             scenario_action = []
             if agent.movable:
-                mdim = self.world.dim_p * 2 + 1
                 if self.continuous_actions:
-                    scenario_action.append(action[0:mdim])
-                    action = action[mdim:]
+                    scenario_action.append(np.asarray(action, dtype=np.float32))
                 else:
-                    scenario_action.append(action % mdim)
-                    action //= mdim
-            if not agent.silent:
-                scenario_action.append(action)
+                    scenario_action.append(int(action))
+
+            if (not agent.silent) and (self.world.dim_c > 0):
+                raise NotImplementedError(
+                    "Communication actions are enabled but not implementd."
+                )
+
             self._set_action(scenario_action, agent, self.action_spaces[agent.name])
 
         self.world.step()
+
+        # Recharge first, then drain
+        self._handle_recharge()
+        self._update_energy()
 
         global_reward = 0.0
         if self.local_ratio is not None:
@@ -200,28 +269,28 @@ class BaseEnv(AECEnv):
 
     # set env action for a particular agent
     def _set_action(self, action, agent, action_space, time=None):
-        agent.action.u = np.zeros(self.world.dim_p)
-        agent.action.c = np.zeros(self.world.dim_c)
+        agent.action.u = np.zeros(self.world.dim_p, dtype=np.float32)
+        agent.action.c = np.zeros(self.world.dim_c, dtype=np.float32)
 
         if agent.movable:
             # physical action
-            agent.action.u = np.zeros(self.world.dim_p)
+            agent.action.u = np.zeros(self.world.dim_p, dtype=np.float32)
+
             if self.continuous_actions:
-                # Process continuous action as in OpenAI MPE
-                # Note: this ordering preserves the same movement direction as in the discrete case
-                agent.action.u[0] += action[0][2] - action[0][1]
-                agent.action.u[1] += action[0][4] - action[0][3]
+                u = np.clip(np.asarray(action[0], dtype=np.float32), -1.0, 1.0)
+                u = 4.0 * u
+                agent.action.u[:] = u
             else:
                 # process discrete action
-                if action[0] == 0:
+                if int(action[0]) == 0:
                     pass
-                if action[0] == 1:
+                elif int(action[0]) == 1:
                     agent.action.u[0] = -1.0
-                if action[0] == 2:
+                elif int(action[0]) == 2:
                     agent.action.u[0] = +1.0
-                if action[0] == 3:
+                elif int(action[0]) == 3:
                     agent.action.u[1] = -1.0
-                if action[0] == 4:
+                elif int(action[0]) == 4:
                     agent.action.u[1] = +1.0
             sensitivity = 5.0
             if agent.accel is not None:
@@ -231,10 +300,10 @@ class BaseEnv(AECEnv):
         if not agent.silent:
             # communication action
             if self.continuous_actions:
-                agent.action.c = action[0]
+                agent.action.c = np.asarray(action[0], dtype=np.float32)
             else:
-                agent.action.c = np.zeros(self.world.dim_c)
-                agent.action.c[action[0]] = 1.0
+                agent.action.c = np.zeros(self.world.dim_c, dtype=np.float32)
+                agent.action.c[int(action[0])] = 1.0
             action = action[1:]
         # make sure we used all elements of action
         assert len(action) == 0
@@ -257,6 +326,7 @@ class BaseEnv(AECEnv):
             # All agents have acted, now we advance the world
             self._execute_world_step()
             self.steps += 1
+            self.scenario.episode_steps += 1
 
             # Check termination conditions from your scenario
             if self.scenario.intruder_won:
@@ -274,33 +344,40 @@ class BaseEnv(AECEnv):
                     self.truncations[a] = True
 
             # If the episode ended this step, populate info["episode"]
-            # The episode ends if all agents are done (terminated or truncated)
             if all(self.terminations[a] or self.truncations[a] for a in self.agents):
-                # Here, we record the final episodic info
+                metrics = self.scenario.episode_metrics()
                 for a in self.agents:
-                    # Provide episode info with the cumulative reward and length
-                    self.infos[a]["episode"] = {
-                        "r": self._cumulative_rewards[a],
-                        "l": self.steps
-                    }
-                return
+                    self.infos[a].update(metrics)
 
         else:
-            # Not all agents have acted yet, so clear rewards for the next agent's turn
             self._clear_rewards()
 
-        # Accumulate rewards for current agent
         self._accumulate_rewards()
 
-        # Render if needed
         if self.render_mode == "human":
             self.render()
 
     def enable_render(self, mode="human"):
-        if not self.renderOn and mode == "human":
-            self.screen = pygame.display.set_mode(self.screen.get_size())
-            self.clock = pygame.time.Clock()
-            self.renderOn = True
+        if self.renderOn:
+            return
+
+        pygame.init()
+
+        if mode == "human":
+            pygame.display.init()
+            self.window = pygame.display.set_mode((self.width, self.height))
+            self.screen = self.window
+
+        elif mode == "rgb_array":
+            self.screen = pygame.Surface((self.width, self.height))
+
+        self.clock = pygame.time.Clock()
+        self.renderOn = True
+
+        if self.game_font is None:
+            self.game_font = pygame.freetype.Font(
+                os.path.join(os.path.dirname(__file__), "secrcode.ttf"), 24
+            )
 
     def render(self):
         if self.render_mode is None:
@@ -311,66 +388,63 @@ class BaseEnv(AECEnv):
 
         self.enable_render(self.render_mode)
 
+        if self.render_mode == "human":
+            pygame.event.pump()
+
         self.draw()
+
         if self.render_mode == "rgb_array":
             observation = np.array(pygame.surfarray.pixels3d(self.screen))
             return np.transpose(observation, axes=(1, 0, 2))
+
         elif self.render_mode == "human":
             pygame.display.flip()
             self.clock.tick(self.metadata["render_fps"])
-            return
 
     def draw(self):
         # Clear screen
         self.screen.fill((255, 255, 255))
 
-        # Update bounds to center around agent
         all_poses = [entity.state.p_pos for entity in self.world.entities]
         cam_range = np.max(np.abs(np.array(all_poses)))
         cam_range = 1.0
 
-        # Separate entities into agents and others (e.g., landmarks)
         agents = [entity for entity in self.world.entities if isinstance(entity, Agent)]
         other_entities = [
             entity for entity in self.world.entities if not isinstance(entity, Agent)
         ]
 
-        # Function to calculate screen coordinates
         def calculate_screen_coords(x, y):
-            y *= -1  # Flip y-axis to mimic old pyglet setup
-            x = (x / cam_range) * self.width // 2 * 0.9  # Normalize x
-            y = (y / cam_range) * self.height // 2 * 0.9  # Normalize y
+            y *= -1
+            x = (x / cam_range) * self.width // 2 * 0.9
+            y = (y / cam_range) * self.height // 2 * 0.9
             x += self.width // 2
             y += self.height // 2
             return int(x), int(y)
 
-        # Draw non-agent entities (e.g., energy stations, landmarks) first
         for entity in other_entities:
             x, y = calculate_screen_coords(*entity.state.p_pos)
             pygame.draw.circle(
                 self.screen, entity.color * 200, (x, y), entity.size * 350
-            )  # 350 is an arbitrary scale factor
+            )
             pygame.draw.circle(
                 self.screen, (0, 0, 0), (x, y), entity.size * 350, 1
-            )  # Draw borders
+            )
 
-        # Draw agents on top
         for agent in agents:
             x, y = calculate_screen_coords(*agent.state.p_pos)
             pygame.draw.circle(
                 self.screen, agent.color * 200, (x, y), agent.size * 350
-            )  # Draw patroller
+            )
             pygame.draw.circle(
                 self.screen, (0, 0, 0), (x, y), agent.size * 350, 1
-            )  # Draw borders
+            )
 
-            # Draw the patrol radius around patrollers
             if isinstance(agent, Agent):
                 pygame.draw.circle(
                     self.screen, (0, 191, 255), (x, y), agent.patrol_radius * 350, 2
-                )  # Light blue circle
+                )
 
-        # Optionally render messages
         text_line = 0
         for agent in agents:
             if not agent.silent:
@@ -391,8 +465,15 @@ class BaseEnv(AECEnv):
                 )
                 text_line += 1
 
-
     def close(self):
-        if self.screen is not None:
+        try:
+            if self.window is not None:
+                pygame.display.quit()
+                self.window = None
             pygame.quit()
+        except Exception:
+            pass
+        finally:
             self.screen = None
+            self.clock = None
+            self.renderOn = False

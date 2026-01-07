@@ -1,20 +1,21 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 
-data = pd.read_csv("mean_ep.csv")
+RUN_ID = "20251220-132003"
+LOG_PATH = f"patrolling/log/{RUN_ID}/progress.csv"
 
-steps = data["Step"].to_numpy()
-mean_ep_length = data["Value"].to_numpy() 
+df = pd.read_csv(LOG_PATH)
+
+steps = df["time/total_timesteps"]
+mean_ep_len = df["roll100/ep_len_mean"]
 
 plt.figure(figsize=(10, 6))
-plt.plot(steps, mean_ep_length, label="Mean Episode Length", linewidth=2, color='blue')
+plt.plot(steps, mean_ep_len, linewidth=2)
 
-plt.title("Average Episode Length During Evaluation", fontsize=16)
-plt.xlabel("Evaluation Steps", fontsize=14)
-plt.ylabel("Mean Episode Length", fontsize=14)
-
+plt.title("Mean Episode Length During Training")
+plt.xlabel("Total Timesteps")
+plt.ylabel("Episode Length")
 plt.grid(alpha=0.4)
-plt.legend(fontsize=12)
 
 plt.savefig("images/mean_ep_length.png", dpi=300)
 plt.show()

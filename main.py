@@ -25,16 +25,16 @@ from pettingzoo.test.api_test import missing_attr_warning
 
 def main():
     env_kwargs = dict(
-        max_cycles=120,
-        continuous_actions=False,
+        max_cycles=250,
+        continuous_actions=True,
         num_intruders=1, 
         num_patrollers=4, 
-        num_obstacles=1
+        num_obstacles=10
     )
     
     env_fn = "patrolEnv"
-    train(env_fn, steps=1e6, seed=16, render_mode=None, hyperparams=None ,**env_kwargs)
-    evaluate(env_fn, num_games=20, render_mode="human", **env_kwargs)
+    train(env_fn, steps=int(1e5), seed=16, render_mode=None, hyperparams=None ,**env_kwargs)
+    evaluate(num_games=15, render_mode="human", **env_kwargs) # (render mode) gif generation: "rgb_array", visualization: "human"
 
 if __name__ == "__main__":
     main()
